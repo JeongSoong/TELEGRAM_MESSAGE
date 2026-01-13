@@ -15,16 +15,16 @@ def send_telegram(message):
     requests.post(url, data=payload)
 
 # -----------------------------
-# Yahoo Finance 뉴스 기반 감성 분석 (100점 환산)
+# Google News RSS 기반 감성 분석 (Railway 100% 호환)
 # -----------------------------
 def get_sentiment_score():
     try:
-        url = "https://finance.yahoo.com/topic/stock-market-news/"
-        html = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}).text
-        soup = BeautifulSoup(html, "html.parser")
+        url = "https://news.google.com/rss/search?q=stock+market&hl=en-US&gl=US&ceid=US:en"
+        html = requests.get(url).text
+        soup = BeautifulSoup(html, "xml")
 
-        articles = soup.select("h3 a")[:10]
-        headlines = [a.get_text(strip=True) for a in articles]
+        items = soup.find_all("item")[:10]
+        headlines = [item.title.get_text(strip=True) for item in items]
 
         if not headlines:
             return 50, ["뉴스 없음"]
@@ -77,19 +77,14 @@ def compute_indicators(close_series: pd.Series):
     }
 
 # -----------------------------
-# 공포탐욕지수(FGI)
+# 공포탐욕지수(FGI) - CNN API 기반 (안정적)
 # -----------------------------
 def get_fgi():
     try:
-        url = "https://feargreedindex.com/"
-        html = requests.get(url).text
-        soup = BeautifulSoup(html, "html.parser")
+        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+        data = requests.get(url).json()
 
-        value = soup.select_one(".fng-circle .fng-value")
-        if not value:
-            return None, "FGI 파싱 실패"
-
-        value = int(value.get_text(strip=True))
+        value = int(data["fear_and_greed"]["score"])
 
         if value <= 25: label = "극단적 공포"
         elif value <= 45: label = "공포"
