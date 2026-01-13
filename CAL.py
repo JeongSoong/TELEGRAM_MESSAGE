@@ -130,7 +130,6 @@ def compute_indicators(df: pd.DataFrame):
 # 지표별 코멘트 생성
 # -----------------------------
 def indicator_comments(data, high_52w):
-
     rsi = data["rsi"]
     bb_pos = data["bb_pos"]
     stoch_k = data["stoch_k"]
@@ -142,50 +141,78 @@ def indicator_comments(data, high_52w):
     price = data["price"]
 
     # RSI
-    if rsi >= 80: rsi_c = "과열 (매우 높음)"
-    elif rsi >= 70: rsi_c = "과열 신호"
-    elif rsi >= 50: rsi_c = "중립"
-    else: rsi_c = "저평가"
+    if rsi >= 80:
+        rsi_c = "과열 (매우 높음)"
+    elif rsi >= 70:
+        rsi_c = "과열 신호"
+    elif rsi >= 50:
+        rsi_c = "중립"
+    else:
+        rsi_c = "저평가"
 
     # Bollinger
-    if bb_pos >= 90: bb_c = "상단 돌파 (강한 과열)"
-    elif bb_pos >= 80: bb_c = "상단 근접 (과열)"
-    elif bb_pos >= 50: bb_c = "중립"
-    else: bb_c = "하단 근접 (저평가)"
+    if bb_pos >= 90:
+        bb_c = "상단 돌파 (강한 과열)"
+    elif bb_pos >= 80:
+        bb_c = "상단 근접 (과열)"
+    elif bb_pos >= 50:
+        bb_c = "중립"
+    else:
+        bb_c = "하단 근접 (저평가)"
 
     # Stochastic
-    if stoch_k >= 90 and stoch_d >= 90: stoch_c = "극과열"
-    elif stoch_k >= 80 and stoch_d >= 80: stoch_c = "과열"
-    elif stoch_k >= 50: stoch_c = "중립"
-    else: stoch_c = "저평가"
+    if stoch_k >= 90 and stoch_d >= 90:
+        stoch_c = "극과열"
+    elif stoch_k >= 80 and stoch_d >= 80:
+        stoch_c = "과열"
+    elif stoch_k >= 50:
+        stoch_c = "중립"
+    else:
+        stoch_c = "저평가"
 
     # CCI
-    if cci >= 100: cci_c = "과열"
-    elif cci <= -100: cci_c = "저평가"
-    else: cci_c = "중립"
+    if cci >= 100:
+        cci_c = "과열"
+    elif cci <= -100:
+        cci_c = "저평가"
+    else:
+        cci_c = "중립"
 
     # Williams %R
-    if williams_r >= -10: wr_c = "극과열"
-    elif williams_r >= -20: wr_c = "과열"
-    elif williams_r >= -80: wr_c = "중립"
-    else: wr_c = "저평가"
+    if williams_r >= -10:
+        wr_c = "극과열"
+    elif williams_r >= -20:
+        wr_c = "과열"
+    elif williams_r >= -80:
+        wr_c = "중립"
+    else:
+        wr_c = "저평가"
 
     # ATR
-    if atr_ratio <= 0.01: atr_c = "변동성 매우 낮음 (과열 패턴)"
-    elif atr_ratio <= 0.02: atr_c = "변동성 낮음"
-    else: atr_c = "변동성 높음"
+    if atr_ratio <= 0.01:
+        atr_c = "변동성 매우 낮음 (과열 패턴)"
+    elif atr_ratio <= 0.02:
+        atr_c = "변동성 낮음"
+    else:
+        atr_c = "변동성 높음"
 
     # MA Deviation
-    if ma_dev >= 5: ma_c = "이평선 대비 과열"
-    elif ma_dev >= 2: ma_c = "상승 추세"
-    else: ma_c = "중립"
+    if ma_dev >= 5:
+        ma_c = "이평선 대비 과열"
+    elif ma_dev >= 2:
+        ma_c = "상승 추세"
+    else:
+        ma_c = "중립"
 
     # 52주 고점 대비
     if high_52w > 0:
         ratio = price / high_52w * 100
-        if ratio >= 98: high52_c = "52주 고점 근접 (과열)"
-        elif ratio >= 90: high52_c = "고점권"
-        else: high52_c = "중립"
+        if ratio >= 98:
+            high52_c = "52주 고점 근접 (과열)"
+        elif ratio >= 90:
+            high52_c = "고점권"
+        else:
+            high52_c = "중립"
     else:
         high52_c = "데이터 없음"
 
@@ -330,7 +357,7 @@ def main():
     tnx_now = data["tnx_now"]
     oil_now = data["oil_now"]
 
-    # 기술 지표 코멘트 생성
+    # 코멘트 생성
     comments = indicator_comments(data, high_52w)
 
     # 기술 점수 계산
@@ -351,7 +378,7 @@ def main():
     # 최종 점수
     final_score = int(tech_score + sentiment_score * 0.3 + proxy_fgi * 0.3)
 
-    # 행동 결정
+    # 행동 결정 + 매수 금액
     avg_change = (sp_change + ndx_change) / 2
 
     if final_score >= 90:
@@ -381,7 +408,6 @@ def main():
     for ticker, weight in portfolio.items():
         amount = int(buy_amount * weight / 100)
         portfolio_lines.append(f"{ticker}: {amount:,}원")
-
     portfolio_text = "\n".join(portfolio_lines)
 
     # 52주 고점 문구
@@ -391,4 +417,36 @@ def main():
         high_52w_line = ""
 
     # 텔레그램 메시지
-    telegram_message =
+    telegram_message = (
+        f"[정수 버블 체크]\n"
+        f"S&P 변동폭: {sp_change:.2f}%\n"
+        f"나스닥 변동폭: {ndx_change:.2f}%\n"
+        f"VIX: {vix_value:.2f}\n\n"
+        f"RSI(14): {data['rsi']:.2f} → {comments['rsi_c']}\n"
+        f"MACD: {data['macd']:.4f} / Signal: {data['macd_signal']:.4f} / Hist: {data['macd_hist']:.4f}\n"
+        f"볼린저 위치: {data['bb_pos']:.1f}% (상단 {data['bb_upper']:.2f}, 하단 {data['bb_lower']:.2f}) → {comments['bb_c']}\n"
+        f"Stoch Slow %K/%D: {data['stoch_k']:.2f} / {data['stoch_d']:.2f} → {comments['stoch_c']}\n"
+        f"CCI(20): {data['cci']:.2f} → {comments['cci_c']}\n"
+        f"Williams %R: {data['williams_r']:.2f} → {comments['wr_c']}\n"
+        f"ATR 비율: {data['atr_ratio']*100:.2f}% → {comments['atr_c']}\n"
+        f"20MA 괴리율: {data['ma_deviation_pct']:.2f}% → {comments['ma_c']}\n"
+        f"{high_52w_line}\n"
+        f"기술 점수(원점수): {tech_score_raw}/100\n"
+        f"뉴스 감성 점수: {sentiment_score}/100\n"
+        f"Proxy FGI: {proxy_fgi}/100\n"
+        f"USD/KRW: {fx_now:,.2f}원\n"
+        f"미국 10년물 금리: {tnx_now:.2f}%\n"
+        f"WTI 유가: {oil_now:.2f}달러\n\n"
+        f"총 점수: {final_score}/100\n"
+        f"75점 이상 매도 시작, 90점 이상 전량 매도\n"
+        f"결론: {result}\n"
+        f"매수 금액: {buy_amount:,}원\n\n"
+        f"[포트폴리오 매수 금액]\n{portfolio_text}\n\n"
+        f"[주요 뉴스]\n - " + "\n - ".join(headlines[:3])
+    )
+
+    send_telegram(telegram_message)
+    print("텔레그램 전송 완료")
+
+if __name__ == "__main__":
+    main()
