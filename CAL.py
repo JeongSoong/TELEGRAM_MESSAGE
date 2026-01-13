@@ -144,6 +144,17 @@ def compute_indicators(df: pd.DataFrame):
         "price": price, "price_prev": price_prev
     }
 
+def format_change(curr, prev, digits=2):
+    try:
+        delta = curr - prev
+    except:
+        return "변화 없음"
+    if prev == 0:
+        return f"{delta:+.{digits}f}"
+    pct = delta / abs(prev) * 100
+    return f"{delta:+.{digits}f} ({pct:+.{digits}f}%)"
+
+
 # -----------------------------
 # Proxy FGI 계산
 # -----------------------------
@@ -257,6 +268,60 @@ def fetch_market_data():
         "tnx_now": tnx_now,
         "oil_now": oil_now,
     }
+
+def indicator_comments(data, high_52w, vix_value, vix_prev):
+    comments = {}
+
+    comments["vix_c"] = (
+        "극저변동성" if vix_value <= 12 else
+        "낮은 변동성" if vix_value <= 15 else
+        "정상 변동성" if vix_value <= 20 else
+        "변동성 증가" if vix_value <= 25 else
+        "공포 구간"
+    )
+    comments["vix_change_c"] = format_change(vix_value, vix_prev)
+
+    comments["macd_level_c"] = "상승 추세" if data["macd"] > 0 else "하락 추세"
+    comments["macd_signal_c"] = "상승 모멘텀" if data["macd"] > data["macd_signal"] else "하락 모멘텀"
+    comments["macd_hist_c"] = "모멘텀 강함" if abs(data["macd_hist"]) >= 5 else "모멘텀 약함"
+
+    comments["macd_change_c"] = format_change(data["macd"], data["macd_prev"], 4)
+    comments["macd_signal_change_c"] = format_change(data["macd_signal"], data["macd_signal_prev"], 4)
+    comments["macd_hist_change_c"] = format_change(data["macd_hist"], data["macd_hist_prev"], 4)
+
+    comments["rsi_c"] = "과열" if data["rsi"] >= 70 else "중립"
+    comments["rsi_change_c"] = format_change(data["rsi"], data["rsi_prev"])
+
+    comments["bb_c"] = "과열" if data["bb_pos"] >= 80 else "중립"
+    comments["bb_change_c"] = format_change(data["bb_pos"], data["bb_pos_prev"])
+
+    comments["stoch_c"] = "과열" if data["stoch_k"] >= 80 else "중립"
+    comments["stoch_k_change_c"] = format_change(data["stoch_k"], data["stoch_k_prev"])
+    comments["stoch_d_change_c"] = format_change(data["stoch_d"], data["stoch_d_prev"])
+
+    comments["cci_c"] = "과열" if data["cci"] >= 100 else "중립"
+    comments["cci_change_c"] = format_change(data["cci"], data["cci_prev"])
+
+    comments["wr_c"] = "극과열" if data["williams_r"] >= -10 else "중립"
+    comments["wr_change_c"] = format_change(data["williams_r"], data["williams_r_prev"])
+
+    comments["atr_c"] = "변동성 낮음" if data["atr_ratio"] <= 0.015 else "변동성 높음"
+    comments["atr_change_c"] = format_change(data["atr_ratio"], data["atr_ratio_prev"], 4)
+
+    comments["ma_c"] = "과열" if data["ma_deviation_pct"] >= 5 else "중립"
+    comments["ma_change_c"] = format_change(data["ma_deviation_pct"], data["ma_deviation_pct_prev"])
+
+    if high_52w > 0:
+        ratio = data["price"] / high_52w * 100
+        ratio_prev = data["price_prev"] / high_52w * 100
+        comments["high52_c"] = "고점 근접" if ratio >= 98 else "중립"
+        comments["high52_change_c"] = format_change(ratio, ratio_prev)
+    else:
+        comments["high52_c"] = "데이터 없음"
+        comments["high52_change_c"] = "변화 없음"
+
+    return comments
+
 
 # -----------------------------
 # 메인 실행 (메시지 포맷 전체 리팩토링)
