@@ -139,6 +139,9 @@ def indicator_comments(data, high_52w, vix_value):
     atr_ratio = data["atr_ratio"]
     ma_dev = data["ma_deviation_pct"]
     price = data["price"]
+    macd = data["macd"]
+    macd_signal = data["macd_signal"]
+    macd_hist = data["macd_hist"]
 
     # VIX
     if vix_value <= 12:
@@ -153,6 +156,31 @@ def indicator_comments(data, high_52w, vix_value):
         vix_c = "25~35로 공포 구간"
     else:
         vix_c = "35 이상으로 패닉 수준"
+
+    # MACD 코멘트 (3개 값 해석)
+    # 1) MACD vs 0 (추세 방향)
+    if macd > 0:
+        macd_level_c = "0 위에 있어 상승 추세 우위"
+    else:
+        macd_level_c = "0 아래에 있어 하락 추세 우위"
+
+    # 2) MACD vs Signal (모멘텀 방향)
+    diff_ms = macd - macd_signal
+    if diff_ms > 0:
+        macd_signal_c = "MACD가 Signal 위에 있어 상승 모멘텀"
+    else:
+        macd_signal_c = "MACD가 Signal 아래에 있어 하락 모멘텀"
+
+    # 3) Histogram 크기 (모멘텀 강도)
+    abs_hist = abs(macd_hist)
+    if abs_hist >= 10:
+        macd_hist_c = "Hist 절대값 10 이상으로 모멘텀 매우 강함"
+    elif abs_hist >= 5:
+        macd_hist_c = "Hist 절대값 5~10으로 모멘텀 강함"
+    elif abs_hist >= 2:
+        macd_hist_c = "Hist 절대값 2~5로 모멘텀 보통"
+    else:
+        macd_hist_c = "Hist 절대값 2 미만으로 모멘텀 약함"
 
     # RSI
     if rsi >= 80:
@@ -239,7 +267,10 @@ def indicator_comments(data, high_52w, vix_value):
         "wr_c": wr_c,
         "atr_c": atr_c,
         "ma_c": ma_c,
-        "high52_c": high52_c
+        "high52_c": high52_c,
+        "macd_level_c": macd_level_c,
+        "macd_signal_c": macd_signal_c,
+        "macd_hist_c": macd_hist_c,
     }
 
 # -----------------------------
@@ -436,8 +467,9 @@ def main():
         f"[정수 버블 체크]\n"
         f"S&P 변동폭: {sp_change:.2f}%\n"
         f"나스닥 변동폭: {ndx_change:.2f}%\n"
+        f"VIX: {vix_value:.2f} → {comments['vix_c']}\n\n"
         f"MACD: {data['macd']:.4f} / Signal: {data['macd_signal']:.4f} / Hist: {data['macd_hist']:.4f}\n"
-        f"VIX: {vix_value:.2f} → {comments['vix_c']}\n"
+        f"MACD 해석: {comments['macd_level_c']} / {comments['macd_signal_c']} / {comments['macd_hist_c']}\n\n"
         f"RSI(14): {data['rsi']:.2f} → {comments['rsi_c']}\n"
         f"볼린저 위치: {data['bb_pos']:.1f}% (상단 {data['bb_upper']:.2f}, 하단 {data['bb_lower']:.2f}) → {comments['bb_c']}\n"
         f"Stoch Slow %K/%D: {data['stoch_k']:.2f} / {data['stoch_d']:.2f} → {comments['stoch_c']}\n"
