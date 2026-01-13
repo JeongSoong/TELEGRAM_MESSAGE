@@ -120,6 +120,18 @@ def compute_proxy_fgi():
         return 50  # 중립
 
 # -----------------------------
+# 환율 / 금리 / 유가
+# -----------------------------
+def get_macro_data():
+    try:
+        fx = yf.Ticker("USDKRW=X").history(period="1d")["Close"][0]
+        tnx = yf.Ticker("^TNX").history(period="1d")["Close"][0]
+        oil = yf.Ticker("CL=F").history(period="1d")["Close"][0]
+        return fx, tnx, oil
+    except:
+        return None, None, None
+
+# -----------------------------
 # 시장 데이터 수집
 # -----------------------------
 def fetch_market_data():
@@ -155,18 +167,6 @@ def fetch_market_data():
         "tnx_now": tnx_now,
         "oil_now": oil_now,
     }
-
-# -----------------------------
-# 환율 / 금리 / 유가
-# -----------------------------
-def get_macro_data():
-    try:
-        fx = yf.Ticker("USDKRW=X").history(period="1d")["Close"][0]
-        tnx = yf.Ticker("^TNX").history(period="1d")["Close"][0]
-        oil = yf.Ticker("CL=F").history(period="1d")["Close"][0]
-        return fx, tnx, oil
-    except:
-        return None, None, None
 
 # -----------------------------
 # 메인 실행
@@ -205,33 +205,24 @@ def main():
 
     final_score = int(tech_score + news_score + fgi_score)
 
-    if final_score >= 70:
+    # -----------------------------
+    # 행동 결정 + 매수 금액 계산
+    # -----------------------------
+    if final_score >= 86:
         result = "전량 매도"
-    elif final_score >= 40:
+        buy_amount = 0
+
+    elif final_score >= 70:
         result = "분할 매도"
+        buy_amount = 0
+
+    elif final_score >= 40:
+        result = "유지"
+        buy_amount = 0
+
     else:
         result = "모으기"
-
-    # -----------------------------
-    # 포트폴리오 배분
-    # -----------------------------
-    portfolio = {
-        "TECL": 20,
-        "SOXL": 25,
-        "ETHU": 10,
-        "SOLT": 10,
-        "INDL": 10,
-        "FNGU": 15,
-        "WEBL": 10
-    }
-
-    avg_change = (sp_change + ndx_change) / 2
-    base_amount = 10000 if avg_change >= 0 else 20000
-
-    allocation = "\n".join(
-        f"{ticker}: {base_amount * weight / 100:,.0f}원"
-        for ticker, weight in portfolio.items()
-    )
+        buy_amount = int(10000 + ((39 - final_score) / 39) * 20000)
 
     # -----------------------------
     # 텔레그램 메시지
@@ -253,9 +244,9 @@ def main():
         f"WTI 유가: {oil_now:.2f}달러\n\n"
 
         f"총 점수: {final_score}/100\n"
-        f"결론: {result}\n\n"
+        f"결론: {result}\n"
+        f"매수 금액: {buy_amount:,}원\n\n"
 
-        f"[포트폴리오 배분]\n{allocation}\n\n"
         f"[주요 뉴스]\n - " + "\n - ".join(headlines[:3])
     )
 
