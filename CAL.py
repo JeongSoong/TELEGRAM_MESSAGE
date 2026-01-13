@@ -142,77 +142,77 @@ def indicator_comments(data, high_52w):
 
     # RSI
     if rsi >= 80:
-        rsi_c = "과열 (매우 높음)"
+        rsi_c = "80 이상으로 과열 (매우 높음)"
     elif rsi >= 70:
-        rsi_c = "과열 신호"
+        rsi_c = "70~80으로 과열 신호"
     elif rsi >= 50:
-        rsi_c = "중립"
+        rsi_c = "50~70으로 중립"
     else:
-        rsi_c = "저평가"
+        rsi_c = "50 미만으로 저평가"
 
     # Bollinger
     if bb_pos >= 90:
-        bb_c = "상단 돌파 (강한 과열)"
+        bb_c = "90 이상으로 상단 돌파 (강한 과열)"
     elif bb_pos >= 80:
-        bb_c = "상단 근접 (과열)"
+        bb_c = "80~90으로 상단 근접 (과열)"
     elif bb_pos >= 50:
-        bb_c = "중립"
+        bb_c = "50~80으로 중립"
     else:
-        bb_c = "하단 근접 (저평가)"
+        bb_c = "50 미만으로 하단 근접 (저평가)"
 
     # Stochastic
     if stoch_k >= 90 and stoch_d >= 90:
-        stoch_c = "극과열"
+        stoch_c = "90 이상으로 극과열"
     elif stoch_k >= 80 and stoch_d >= 80:
-        stoch_c = "과열"
+        stoch_c = "80~90으로 과열"
     elif stoch_k >= 50:
-        stoch_c = "중립"
+        stoch_c = "50~80으로 중립"
     else:
-        stoch_c = "저평가"
+        stoch_c = "50 미만으로 저평가"
 
     # CCI
     if cci >= 100:
-        cci_c = "과열"
+        cci_c = "100 이상으로 과열"
     elif cci <= -100:
-        cci_c = "저평가"
+        cci_c = "-100 이하로 저평가"
     else:
-        cci_c = "중립"
+        cci_c = "-100~100 사이로 중립"
 
     # Williams %R
     if williams_r >= -10:
-        wr_c = "극과열"
+        wr_c = "-10 이상으로 극과열"
     elif williams_r >= -20:
-        wr_c = "과열"
+        wr_c = "-20~-10으로 과열"
     elif williams_r >= -80:
-        wr_c = "중립"
+        wr_c = "-80~-10으로 중립"
     else:
-        wr_c = "저평가"
+        wr_c = "-80 미만으로 저평가"
 
     # ATR
     if atr_ratio <= 0.01:
-        atr_c = "변동성 매우 낮음 (과열 패턴)"
+        atr_c = "0.01 이하로 변동성 매우 낮음 (과열 패턴)"
     elif atr_ratio <= 0.02:
-        atr_c = "변동성 낮음"
+        atr_c = "0.01~0.02로 변동성 낮음"
     else:
-        atr_c = "변동성 높음"
+        atr_c = "0.02 초과로 변동성 높음"
 
     # MA Deviation
     if ma_dev >= 5:
-        ma_c = "이평선 대비 과열"
+        ma_c = "5 이상으로 이평선 대비 과열"
     elif ma_dev >= 2:
-        ma_c = "상승 추세"
+        ma_c = "2~5로 상승 추세"
     else:
-        ma_c = "중립"
+        ma_c = "2 미만으로 중립"
 
     # 52주 고점 대비
     if high_52w > 0:
         ratio = price / high_52w * 100
         if ratio >= 98:
-            high52_c = "52주 고점 근접 (과열)"
+            high52_c = "98 이상으로 52주 고점 근접 (과열)"
         elif ratio >= 90:
-            high52_c = "고점권"
+            high52_c = "90~98로 고점권"
         else:
-            high52_c = "중립"
+            high52_c = "90 미만으로 중립"
     else:
         high52_c = "데이터 없음"
 
