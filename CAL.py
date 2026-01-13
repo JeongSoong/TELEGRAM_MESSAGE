@@ -129,7 +129,7 @@ def compute_indicators(df: pd.DataFrame):
 # -----------------------------
 # 지표별 코멘트 생성
 # -----------------------------
-def indicator_comments(data, high_52w):
+def indicator_comments(data, high_52w, vix_value):
     rsi = data["rsi"]
     bb_pos = data["bb_pos"]
     stoch_k = data["stoch_k"]
@@ -231,6 +231,7 @@ def indicator_comments(data, high_52w):
         high52_c = "데이터 없음"
 
     return {
+        "vix_c": vix_c,
         "rsi_c": rsi_c,
         "bb_c": bb_c,
         "stoch_c": stoch_c,
@@ -372,7 +373,7 @@ def main():
     oil_now = data["oil_now"]
 
     # 코멘트 생성
-    comments = indicator_comments(data, high_52w)
+    comments = indicator_comments(data, high_52w, vix_value)
 
     # 기술 점수 계산
     tech_score_raw = 0
@@ -436,7 +437,6 @@ def main():
         f"S&P 변동폭: {sp_change:.2f}%\n"
         f"나스닥 변동폭: {ndx_change:.2f}%\n"
         f"MACD: {data['macd']:.4f} / Signal: {data['macd_signal']:.4f} / Hist: {data['macd_hist']:.4f}\n"
-        
         f"VIX: {vix_value:.2f} → {comments['vix_c']}\n"
         f"RSI(14): {data['rsi']:.2f} → {comments['rsi_c']}\n"
         f"볼린저 위치: {data['bb_pos']:.1f}% (상단 {data['bb_upper']:.2f}, 하단 {data['bb_lower']:.2f}) → {comments['bb_c']}\n"
