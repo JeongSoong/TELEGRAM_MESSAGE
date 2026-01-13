@@ -39,35 +39,92 @@ def get_sentiment_score():
         return 50, ["뉴스 분석 실패"]
 
 # -----------------------------
-# 기술적 지표 (MACD, RSI, 볼린저)
+# 기술적 지표 (RSI, MACD, 볼린저, Stoch, CCI, WilliamsR, ATR,乖離율, 52주 고점 등)
 # -----------------------------
-def compute_indicators(close_series):
-    delta = close_series.diff()
+def compute_indicators(df: pd.DataFrame):
+    close = df["Close"]
+    high = df["High"]
+    low = df["Low"]
+
+    # RSI(14)
+    delta = close.diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
     loss = -delta.where(delta < 0, 0).rolling(14).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
     rsi_latest = float(rsi.iloc[-1])
 
-    ema12 = close_series.ewm(span=12).mean()
-    ema26 = close_series.ewm(span=26).mean()
+    # MACD(12,26,9)
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
-    signal = macd.ewm(span=9).mean()
+    signal = macd.ewm(span=9, adjust=False).mean()
     macd_hist = macd - signal
 
     macd_latest = float(macd.iloc[-1])
     signal_latest = float(signal.iloc[-1])
     hist_latest = float(macd_hist.iloc[-1])
 
-    ma20 = close_series.rolling(20).mean()
-    std20 = close_series.rolling(20).std()
+    # 볼린저밴드(20, 2)
+    ma20 = close.rolling(20).mean()
+    std20 = close.rolling(20).std()
     upper = float((ma20 + 2 * std20).iloc[-1])
     lower = float((ma20 - 2 * std20).iloc[-1])
-    price = float(close_series.iloc[-1])
+    price = float(close.iloc[-1])
+    bb_pos = (price - lower) / (upper - lower) * 100 if upper != lower else 50
 
-    bb_pos = (price - lower) / (upper - lower) * 100
+    # Stochastic Slow (14, 3)
+    low14 = low.rolling(14).min()
+    high14 = high.rolling(14).max()
+    stoch_k = (close - low14) / (high14 - low14) * 100
+    stoch_d = stoch_k.rolling(3).mean()
+    stoch_k_latest = float(stoch_k.iloc[-1])
+    stoch_d_latest = float(stoch_d.iloc[-1])
 
-    return rsi_latest, macd_latest, signal_latest, hist_latest, bb_pos, upper, lower
+    # CCI (20)
+    tp = (high + low + close) / 3
+    sma_tp = tp.rolling(20).mean()
+    mean_dev = (tp - sma_tp).abs().rolling(20).mean()
+    cci = (tp - sma_tp) / (0.015 * mean_dev)
+    cci_latest = float(cci.iloc[-1])
+
+    # Williams %R (14)
+    highest14 = high.rolling(14).max()
+    lowest14 = low.rolling(14).min()
+    williams_r = -100 * (highest14 - close) / (highest14 - lowest14)
+    williams_r_latest = float(williams_r.iloc[-1])
+
+    # ATR(14) 및 ATR 비율
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        (high - low),
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean()
+    atr_latest = float(atr.iloc[-1])
+    atr_ratio_latest = atr_latest / price if price != 0 else 0
+
+    # 20MA乖離율
+    ma20_latest = float(ma20.iloc[-1])
+    ma_deviation_pct = (price - ma20_latest) / ma20_latest * 100 if ma20_latest != 0 else 0
+
+    return {
+        "rsi": rsi_latest,
+        "macd": macd_latest,
+        "macd_signal": signal_latest,
+        "macd_hist": hist_latest,
+        "bb_pos": bb_pos,
+        "bb_upper": upper,
+        "bb_lower": lower,
+        "stoch_k": stoch_k_latest,
+        "stoch_d": stoch_d_latest,
+        "cci": cci_latest,
+        "williams_r": williams_r_latest,
+        "atr_ratio": atr_ratio_latest,
+        "ma_deviation_pct": ma_deviation_pct,
+        "price": price,
+    }
 
 # -----------------------------
 # 정교한 Proxy FGI (7개 요소 기반)
@@ -134,31 +191,35 @@ def get_macro_data():
 # 시장 데이터 수집
 # -----------------------------
 def fetch_market_data():
-    sp_hist = yf.Ticker("^GSPC").history(period="30d")
+    # 252일로 52주 고점 계산 가능하게
+    sp_hist = yf.Ticker("^GSPC").history(period="252d")
     ndx_hist = yf.Ticker("^NDX").history(period="1d")
     vix_hist = yf.Ticker("^VIX").history(period="1d")
 
-    sp_change = float((sp_hist["Close"].iloc[-1] - sp_hist["Open"].iloc[-1]) / sp_hist["Open"].iloc[-1] * 100)
+    # 일간 변동률 (가장 최근 날)
+    sp_today = sp_hist.iloc[-1]
+    sp_yday = sp_hist.iloc[-2]
+    sp_change = float((sp_today["Close"] - sp_today["Open"]) / sp_today["Open"] * 100)
+
     ndx_change = float((ndx_hist["Close"][0] - ndx_hist["Open"][0]) / ndx_hist["Open"][0] * 100)
     vix_value = float(vix_hist["Close"][0])
 
-    rsi, macd, signal, hist, bb_pos, bb_upper, bb_lower = compute_indicators(sp_hist["Close"])
+    # 기술 지표 계산 (마지막 60일 정도만 사용해도 충분하지만 전체 close 사용)
+    indicators = compute_indicators(sp_hist[["Open", "High", "Low", "Close"]])
 
     sentiment_score, headlines = get_sentiment_score()
     proxy_fgi = compute_proxy_fgi()
     fx_now, tnx_now, oil_now = get_macro_data()
 
+    # 52주 고점
+    high_52w = float(sp_hist["High"].max())
+
     return {
         "sp_change": sp_change,
         "ndx_change": ndx_change,
         "vix_value": vix_value,
-        "rsi": rsi,
-        "macd": macd,
-        "macd_signal": signal,
-        "macd_hist": hist,
-        "bb_pos": bb_pos,
-        "bb_upper": bb_upper,
-        "bb_lower": bb_lower,
+        "high_52w": high_52w,
+        **indicators,
         "sentiment_score": sentiment_score,
         "headlines": headlines,
         "proxy_fgi": proxy_fgi,
@@ -176,6 +237,8 @@ def main():
     sp_change = data["sp_change"]
     ndx_change = data["ndx_change"]
     vix_value = data["vix_value"]
+    high_52w = data["high_52w"]
+
     rsi = data["rsi"]
     macd = data["macd"]
     macd_signal = data["macd_signal"]
@@ -183,6 +246,14 @@ def main():
     bb_pos = data["bb_pos"]
     bb_upper = data["bb_upper"]
     bb_lower = data["bb_lower"]
+    stoch_k = data["stoch_k"]
+    stoch_d = data["stoch_d"]
+    cci = data["cci"]
+    williams_r = data["williams_r"]
+    atr_ratio = data["atr_ratio"]
+    ma_deviation_pct = data["ma_deviation_pct"]
+    price = data["price"]
+
     sentiment_score = data["sentiment_score"]
     headlines = data["headlines"]
     proxy_fgi = data["proxy_fgi"]
@@ -191,14 +262,56 @@ def main():
     oil_now = data["oil_now"]
 
     # -----------------------------
-    # 100점 만점 종합 점수
+    # 기술 점수 (10개 지표 × 10점 = 100점)
     # -----------------------------
-    tech_score = 0
-    if rsi >= 80: tech_score += 10
-    if bb_pos >= 80: tech_score += 10
-    if macd > macd_signal: tech_score += 10
-    if vix_value <= 15: tech_score += 10
+    tech_score_raw = 0
 
+    # 1) RSI 과열
+    if rsi >= 80:
+        tech_score_raw += 10
+
+    # 2) 볼린저 상단 근접
+    if bb_pos >= 80:
+        tech_score_raw += 10
+
+    # 3) MACD > 시그널 (상승 추세)
+    if macd > macd_signal:
+        tech_score_raw += 10
+
+    # 4) VIX 낮음 (안도/과열 구간)
+    if vix_value <= 15:
+        tech_score_raw += 10
+
+    # 5) Stochastic Slow 과열
+    if stoch_k >= 80 and stoch_d >= 80:
+        tech_score_raw += 10
+
+    # 6) CCI 과열
+    if cci >= 100:
+        tech_score_raw += 10
+
+    # 7) Williams %R 과열
+    if williams_r >= -20:
+        tech_score_raw += 10
+
+    # 8) ATR 변동성 낮음
+    if atr_ratio <= 0.015:
+        tech_score_raw += 10
+
+    # 9) 20MA乖離율 (5% 이상 위)
+    if ma_deviation_pct >= 5:
+        tech_score_raw += 10
+
+    # 10) 52주 고점 대비 95% 이상
+    if high_52w > 0 and price >= high_52w * 0.95:
+        tech_score_raw += 10
+
+    # tech_score_raw (0~100)을 40% 비중으로 축소
+    tech_score = tech_score_raw * 0.4
+
+    # -----------------------------
+    # 최종 100점 만점 종합 점수
+    # -----------------------------
     news_score = sentiment_score * 0.3
     fgi_score = proxy_fgi * 0.3
 
@@ -219,8 +332,9 @@ def main():
 
     else:
         result = "모으기"
+        # 0~39점 구간: 점수 낮을수록 많이 매수 (1만~3만)
         buy_amount = int(10000 + ((69 - final_score) / 69) * 20000)
-
+        # 전날 S&P+나스닥 평균이 음수면 무조건 1만원
         if avg_change < 0:
             buy_amount = 10000
 
@@ -255,20 +369,23 @@ def main():
 
         f"RSI(14): {rsi:.2f}\n"
         f"MACD: {macd:.4f} / Signal: {macd_signal:.4f} / Hist: {macd_hist:.4f}\n"
-        f"볼린저 위치: {bb_pos:.1f}% (상단 {bb_upper:.2f}, 하단 {bb_lower:.2f})\n\n"
-
+        f"볼린저 위치: {bb_pos:.1f}% (상단 {bb_upper:.2f}, 하단 {bb_lower:.2f})\n"
+        f"Stoch Slow %K/%D: {stoch_k:.2f} / {stoch_d:.2f}\n"
+        f"CCI(20): {cci:.2f}\n"
+        f"Williams %R: {williams_r:.2f}\n"
+        f"ATR 비율: {atr_ratio*100:.2f}%\n"
+        f"20MA乖離율: {ma_deviation_pct:.2f}%\n"
+        f"52주 고점 대비: {price/high_52w*100:.2f}%\n\n" if high_52w > 0 else "\n"
         f"뉴스 감성 점수: {sentiment_score}/100\n"
         f"Proxy FGI: {proxy_fgi}/100\n"
         f"USD/KRW: {fx_now:,.2f}원\n"
         f"미국 10년물 금리: {tnx_now:.2f}%\n"
         f"WTI 유가: {oil_now:.2f}달러\n\n"
-
+        f"기술 점수(원점수): {tech_score_raw}/100\n"
         f"총 점수: {final_score}/100\n"
         f"결론: {result}\n"
         f"매수 금액: {buy_amount:,}원\n\n"
-
         f"[포트폴리오 매수 금액]\n{portfolio_text}\n\n"
-
         f"[주요 뉴스]\n - " + "\n - ".join(headlines[:3])
     )
 
