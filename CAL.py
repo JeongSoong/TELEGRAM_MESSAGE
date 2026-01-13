@@ -110,7 +110,6 @@ def compute_proxy_fgi():
         # 7) Volatility Change
         vol_score = max(0, min(100, 100 - abs(vix_change) * 2))
 
-        # 최종 Proxy FGI
         proxy_fgi = int((vix_score + putcall_score + junk_score + safe_score +
                          momentum_score + breadth_score + vol_score) / 7)
 
@@ -208,6 +207,8 @@ def main():
     # -----------------------------
     # 행동 결정 + 매수 금액 계산
     # -----------------------------
+    avg_change = (sp_change + ndx_change) / 2
+
     if final_score >= 86:
         result = "전량 매도"
         buy_amount = 0
@@ -216,9 +217,36 @@ def main():
         result = "분할 매도"
         buy_amount = 0
 
+    elif final_score >= 40:
+        result = "유지"
+        buy_amount = 0
+
     else:
         result = "모으기"
-        buy_amount = int(10000 + ((69 - final_score) / 69) * 20000)
+        buy_amount = int(10000 + ((39 - final_score) / 39) * 20000)
+
+        if avg_change < 0:
+            buy_amount = 10000
+
+    # -----------------------------
+    # 포트폴리오별 매수 금액 계산
+    # -----------------------------
+    portfolio = {
+        "TECL": 20,
+        "SOXL": 25,
+        "ETHU": 10,
+        "SOLT": 10,
+        "INDL": 10,
+        "FNGU": 15,
+        "WEBL": 10
+    }
+
+    portfolio_lines = []
+    for ticker, weight in portfolio.items():
+        amount = int(buy_amount * weight / 100)
+        portfolio_lines.append(f"{ticker}: {amount:,}원")
+
+    portfolio_text = "\n".join(portfolio_lines)
 
     # -----------------------------
     # 텔레그램 메시지
@@ -242,6 +270,8 @@ def main():
         f"총 점수: {final_score}/100\n"
         f"결론: {result}\n"
         f"매수 금액: {buy_amount:,}원\n\n"
+
+        f"[포트폴리오 매수 금액]\n{portfolio_text}\n\n"
 
         f"[주요 뉴스]\n - " + "\n - ".join(headlines[:3])
     )
