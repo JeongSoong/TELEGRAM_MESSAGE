@@ -39,7 +39,7 @@ def get_sentiment_score():
         return 50, ["뉴스 분석 실패"]
 
 # -----------------------------
-# 기술적 지표 계산 (전일 값 포함)
+# 기술적 지표 계산
 # -----------------------------
 def compute_indicators(df: pd.DataFrame):
     close = df["Close"]
@@ -69,15 +69,13 @@ def compute_indicators(df: pd.DataFrame):
     hist_latest = float(macd_hist.iloc[-1])
     hist_prev = float(macd_hist.iloc[-2])
 
-    # 볼린저밴드(20, 2)
+    # Bollinger Bands
     ma20 = close.rolling(20).mean()
     std20 = close.rolling(20).std()
-    upper_series = ma20 + 2 * std20
-    lower_series = ma20 - 2 * std20
-    upper = float(upper_series.iloc[-1])
-    lower = float(lower_series.iloc[-1])
-    upper_prev = float(upper_series.iloc[-2])
-    lower_prev = float(lower_series.iloc[-2])
+    upper = float((ma20 + 2 * std20).iloc[-1])
+    lower = float((ma20 - 2 * std20).iloc[-1])
+    upper_prev = float((ma20 + 2 * std20).iloc[-2])
+    lower_prev = float((ma20 - 2 * std20).iloc[-2])
 
     price = float(close.iloc[-1])
     price_prev = float(close.iloc[-2])
@@ -85,17 +83,18 @@ def compute_indicators(df: pd.DataFrame):
     bb_pos = (price - lower) / (upper - lower) * 100 if upper != lower else 50
     bb_pos_prev = (price_prev - lower_prev) / (upper_prev - lower_prev) * 100 if upper_prev != lower_prev else 50
 
-    # Stochastic Slow (14, 3)
+    # Stochastic Slow
     low14 = low.rolling(14).min()
     high14 = high.rolling(14).max()
     stoch_k = (close - low14) / (high14 - low14) * 100
     stoch_d = stoch_k.rolling(3).mean()
+
     stoch_k_latest = float(stoch_k.iloc[-1])
     stoch_k_prev = float(stoch_k.iloc[-2])
     stoch_d_latest = float(stoch_d.iloc[-1])
     stoch_d_prev = float(stoch_d.iloc[-2])
 
-    # CCI (20)
+    # CCI
     tp = (high + low + close) / 3
     sma_tp = tp.rolling(20).mean()
     mean_dev = (tp - sma_tp).abs().rolling(20).mean()
@@ -103,14 +102,14 @@ def compute_indicators(df: pd.DataFrame):
     cci_latest = float(cci.iloc[-1])
     cci_prev = float(cci.iloc[-2])
 
-    # Williams %R (14)
+    # Williams %R
     highest14 = high.rolling(14).max()
     lowest14 = low.rolling(14).min()
     williams_r = -100 * (highest14 - close) / (highest14 - lowest14)
     williams_r_latest = float(williams_r.iloc[-1])
     williams_r_prev = float(williams_r.iloc[-2])
 
-    # ATR(14)
+    # ATR
     prev_close = close.shift(1)
     tr = pd.concat([
         (high - low),
@@ -126,238 +125,27 @@ def compute_indicators(df: pd.DataFrame):
     # 20MA 괴리율
     ma20_latest = float(ma20.iloc[-1])
     ma20_prev = float(ma20.iloc[-2])
-    ma_deviation_pct = (price - ma20_latest) / ma20_latest * 100 if ma20_latest != 0 else 0
-    ma_deviation_pct_prev = (price_prev - ma20_prev) / ma20_prev * 100 if ma20_prev != 0 else 0
+    ma_dev = (price - ma20_latest) / ma20_latest * 100 if ma20_latest != 0 else 0
+    ma_dev_prev = (price_prev - ma20_prev) / ma20_prev * 100 if ma20_prev != 0 else 0
 
     return {
-        "rsi": rsi_latest,
-        "rsi_prev": rsi_prev,
-        "macd": macd_latest,
-        "macd_prev": macd_prev,
-        "macd_signal": signal_latest,
-        "macd_signal_prev": signal_prev,
-        "macd_hist": hist_latest,
-        "macd_hist_prev": hist_prev,
-        "bb_pos": bb_pos,
-        "bb_pos_prev": bb_pos_prev,
-        "bb_upper": upper,
-        "bb_lower": lower,
-        "stoch_k": stoch_k_latest,
-        "stoch_k_prev": stoch_k_prev,
-        "stoch_d": stoch_d_latest,
-        "stoch_d_prev": stoch_d_prev,
-        "cci": cci_latest,
-        "cci_prev": cci_prev,
-        "williams_r": williams_r_latest,
-        "williams_r_prev": williams_r_prev,
-        "atr_ratio": atr_ratio_latest,
-        "atr_ratio_prev": atr_ratio_prev,
-        "ma_deviation_pct": ma_deviation_pct,
-        "ma_deviation_pct_prev": ma_deviation_pct_prev,
-        "price": price,
-        "price_prev": price_prev,
+        "rsi": rsi_latest, "rsi_prev": rsi_prev,
+        "macd": macd_latest, "macd_prev": macd_prev,
+        "macd_signal": signal_latest, "macd_signal_prev": signal_prev,
+        "macd_hist": hist_latest, "macd_hist_prev": hist_prev,
+        "bb_pos": bb_pos, "bb_pos_prev": bb_pos_prev,
+        "bb_upper": upper, "bb_lower": lower,
+        "stoch_k": stoch_k_latest, "stoch_k_prev": stoch_k_prev,
+        "stoch_d": stoch_d_latest, "stoch_d_prev": stoch_d_prev,
+        "cci": cci_latest, "cci_prev": cci_prev,
+        "williams_r": williams_r_latest, "williams_r_prev": williams_r_prev,
+        "atr_ratio": atr_ratio_latest, "atr_ratio_prev": atr_ratio_prev,
+        "ma_deviation_pct": ma_dev, "ma_deviation_pct_prev": ma_dev_prev,
+        "price": price, "price_prev": price_prev
     }
 
 # -----------------------------
-# 변화량 포맷터 (C 스타일)
-# -----------------------------
-def format_change(curr, prev, digits=2):
-    try:
-        delta = curr - prev
-    except TypeError:
-        return "변화 데이터 없음"
-    if prev is None or prev == 0:
-        return f"{delta:+.{digits}f} (기준값 0, % 계산 불가)"
-    pct = delta / abs(prev) * 100
-    return f"{delta:+.{digits}f} ({pct:+.{digits}f}%)"
-
-# -----------------------------
-# 지표별 코멘트 + 전일 대비 변화 코멘트
-# -----------------------------
-def indicator_comments(data, high_52w, vix_value, vix_prev):
-    rsi = data["rsi"]
-    rsi_prev = data["rsi_prev"]
-    bb_pos = data["bb_pos"]
-    bb_pos_prev = data["bb_pos_prev"]
-    stoch_k = data["stoch_k"]
-    stoch_k_prev = data["stoch_k_prev"]
-    stoch_d = data["stoch_d"]
-    stoch_d_prev = data["stoch_d_prev"]
-    cci = data["cci"]
-    cci_prev = data["cci_prev"]
-    williams_r = data["williams_r"]
-    williams_r_prev = data["williams_r_prev"]
-    atr_ratio = data["atr_ratio"]
-    atr_ratio_prev = data["atr_ratio_prev"]
-    ma_dev = data["ma_deviation_pct"]
-    ma_dev_prev = data["ma_deviation_pct_prev"]
-    price = data["price"]
-    price_prev = data["price_prev"]
-
-    macd = data["macd"]
-    macd_prev = data["macd_prev"]
-    macd_signal = data["macd_signal"]
-    macd_signal_prev = data["macd_signal_prev"]
-    macd_hist = data["macd_hist"]
-    macd_hist_prev = data["macd_hist_prev"]
-
-    # VIX 레벨 코멘트
-    if vix_value <= 12:
-        vix_c = "12 이하로 극저변동성 (과열·버블 패턴)"
-    elif vix_value <= 15:
-        vix_c = "12~15로 낮은 변동성 (과열 가능성)"
-    elif vix_value <= 20:
-        vix_c = "15~20으로 정상 변동성"
-    elif vix_value <= 25:
-        vix_c = "20~25로 변동성 증가 (주의)"
-    elif vix_value <= 35:
-        vix_c = "25~35로 공포 구간"
-    else:
-        vix_c = "35 이상으로 패닉 수준"
-    vix_change_c = format_change(vix_value, vix_prev, 2)
-
-    # MACD 세부 코멘트
-    if macd > 0:
-        macd_level_c = "0 위에 있어 상승 추세 우위"
-    else:
-        macd_level_c = "0 아래에 있어 하락 추세 우위"
-
-    if macd > macd_signal:
-        macd_signal_c = "MACD가 Signal 위에 있어 상승 모멘텀"
-    else:
-        macd_signal_c = "MACD가 Signal 아래에 있어 하락 모멘텀"
-
-    abs_hist = abs(macd_hist)
-    if abs_hist >= 10:
-        macd_hist_c = "Hist 절대값 10 이상으로 모멘텀 매우 강함"
-    elif abs_hist >= 5:
-        macd_hist_c = "Hist 절대값 5~10으로 모멘텀 강함"
-    elif abs_hist >= 2:
-        macd_hist_c = "Hist 절대값 2~5로 모멘텀 보통"
-    else:
-        macd_hist_c = "Hist 절대값 2 미만으로 모멘텀 약함"
-
-    macd_change_c = format_change(macd, macd_prev, 4)
-    macd_signal_change_c = format_change(macd_signal, macd_signal_prev, 4)
-    macd_hist_change_c = format_change(macd_hist, macd_hist_prev, 4)
-
-    # RSI
-    if rsi >= 80:
-        rsi_c = "80 이상으로 과열 (매우 높음)"
-    elif rsi >= 70:
-        rsi_c = "70~80으로 과열 신호"
-    elif rsi >= 50:
-        rsi_c = "50~70으로 중립"
-    else:
-        rsi_c = "50 미만으로 저평가"
-    rsi_change_c = format_change(rsi, rsi_prev, 2)
-
-    # Bollinger
-    if bb_pos >= 90:
-        bb_c = "90 이상으로 상단 돌파 (강한 과열)"
-    elif bb_pos >= 80:
-        bb_c = "80~90으로 상단 근접 (과열)"
-    elif bb_pos >= 50:
-        bb_c = "50~80으로 중립"
-    else:
-        bb_c = "50 미만으로 하단 근접 (저평가)"
-    bb_change_c = format_change(bb_pos, bb_pos_prev, 2)
-
-    # Stochastic
-    if stoch_k >= 90 and stoch_d >= 90:
-        stoch_c = "90 이상으로 극과열"
-    elif stoch_k >= 80 and stoch_d >= 80:
-        stoch_c = "80~90으로 과열"
-    elif stoch_k >= 50:
-        stoch_c = "50~80으로 중립"
-    else:
-        stoch_c = "50 미만으로 저평가"
-    stoch_k_change_c = format_change(stoch_k, stoch_k_prev, 2)
-    stoch_d_change_c = format_change(stoch_d, stoch_d_prev, 2)
-
-    # CCI
-    if cci >= 100:
-        cci_c = "100 이상으로 과열"
-    elif cci <= -100:
-        cci_c = "-100 이하로 저평가"
-    else:
-        cci_c = "-100~100 사이로 중립"
-    cci_change_c = format_change(cci, cci_prev, 2)
-
-    # Williams %R
-    if williams_r >= -10:
-        wr_c = "-10 이상으로 극과열"
-    elif williams_r >= -20:
-        wr_c = "-20~-10으로 과열"
-    elif williams_r >= -80:
-        wr_c = "-80~-10으로 중립"
-    else:
-        wr_c = "-80 미만으로 저평가"
-    wr_change_c = format_change(williams_r, williams_r_prev, 2)
-
-    # ATR
-    if atr_ratio <= 0.01:
-        atr_c = "0.01 이하로 변동성 매우 낮음 (과열 패턴)"
-    elif atr_ratio <= 0.02:
-        atr_c = "0.01~0.02로 변동성 낮음"
-    else:
-        atr_c = "0.02 초과로 변동성 높음"
-    atr_change_c = format_change(atr_ratio, atr_ratio_prev, 4)
-
-    # MA Deviation
-    if ma_dev >= 5:
-        ma_c = "5 이상으로 이평선 대비 과열"
-    elif ma_dev >= 2:
-        ma_c = "2~5로 상승 추세"
-    else:
-        ma_c = "2 미만으로 중립"
-    ma_change_c = format_change(ma_dev, ma_dev_prev, 2)
-
-    # 52주 고점 대비
-    if high_52w > 0:
-        ratio = price / high_52w * 100
-        ratio_prev = price_prev / high_52w * 100
-        if ratio >= 98:
-            high52_c = "98 이상으로 52주 고점 근접 (과열)"
-        elif ratio >= 90:
-            high52_c = "90~98로 고점권"
-        else:
-            high52_c = "90 미만으로 중립"
-        high52_change_c = format_change(ratio, ratio_prev, 2)
-    else:
-        high52_c = "데이터 없음"
-        high52_change_c = "변화 데이터 없음"
-
-    return {
-        "vix_c": vix_c,
-        "vix_change_c": vix_change_c,
-        "rsi_c": rsi_c,
-        "rsi_change_c": rsi_change_c,
-        "bb_c": bb_c,
-        "bb_change_c": bb_change_c,
-        "stoch_c": stoch_c,
-        "stoch_k_change_c": stoch_k_change_c,
-        "stoch_d_change_c": stoch_d_change_c,
-        "cci_c": cci_c,
-        "cci_change_c": cci_change_c,
-        "wr_c": wr_c,
-        "wr_change_c": wr_change_c,
-        "atr_c": atr_c,
-        "atr_change_c": atr_change_c,
-        "ma_c": ma_c,
-        "ma_change_c": ma_change_c,
-        "high52_c": high52_c,
-        "high52_change_c": high52_change_c,
-        "macd_level_c": macd_level_c,
-        "macd_signal_c": macd_signal_c,
-        "macd_hist_c": macd_hist_c,
-        "macd_change_c": macd_change_c,
-        "macd_signal_change_c": macd_signal_change_c,
-        "macd_hist_change_c": macd_hist_change_c,
-    }
-
-# -----------------------------
-# Proxy FGI
+# Proxy FGI 계산
 # -----------------------------
 def compute_proxy_fgi():
     try:
@@ -434,10 +222,9 @@ def fetch_market_data():
     sp_all = yf.Ticker("^GSPC").history(period="252d")
     sp_hist = sp_all.iloc[-60:]
     ndx_hist = yf.Ticker("^NDX").history(period="1d")
-    vix_hist = yf.Ticker("^VIX").history(period="2d")  # 전일 값 포함
+    vix_hist = yf.Ticker("^VIX").history(period="2d")
 
     sp_today = sp_all.iloc[-1]
-    sp_yesterday = sp_all.iloc[-2]
     sp_change = float((sp_today["Close"] - sp_today["Open"]) / sp_today["Open"] * 100)
 
     ndx_close = ndx_hist["Close"]
@@ -472,7 +259,7 @@ def fetch_market_data():
     }
 
 # -----------------------------
-# 메인 실행
+# 메인 실행 (메시지 포맷 전체 리팩토링)
 # -----------------------------
 def main():
     data = fetch_market_data()
@@ -490,7 +277,7 @@ def main():
     tnx_now = data["tnx_now"]
     oil_now = data["oil_now"]
 
-    # 코멘트 + 전일 대비 변화 생성
+    # 코멘트 생성
     comments = indicator_comments(data, high_52w, vix_value, vix_prev)
 
     # 기술 점수 계산
@@ -511,7 +298,7 @@ def main():
     # 최종 점수
     final_score = int(tech_score + sentiment_score * 0.3 + proxy_fgi * 0.3)
 
-    # 행동 결정 + 매수 금액
+    # 행동 결정
     avg_change = (sp_change + ndx_change) / 2
 
     if final_score >= 90:
@@ -543,59 +330,97 @@ def main():
         portfolio_lines.append(f"{ticker}: {amount:,}원")
     portfolio_text = "\n".join(portfolio_lines)
 
-    # 52주 고점 문구
+    # 52주 고점 대비
     if high_52w > 0:
         ratio_now = data["price"] / high_52w * 100
-        high_52w_line = (
-            f"52주 고점 대비: {ratio_now:.2f}% → {comments['high52_c']} "
-            f"(전일 대비 {comments['high52_change_c']})\n"
+        high52_line = (
+            f"- {ratio_now:.2f}% → {comments['high52_c']}\n"
+            f"- 변화: {comments['high52_change_c']}\n"
         )
     else:
-        high_52w_line = ""
+        high52_line = "- 데이터 없음\n"
 
-    # 텔레그램 메시지
-    telegram_message = (
-        f"[정수 버블 체크]\n"
-        f"S&P 변동폭: {sp_change:.2f}%\n"
-        f"나스닥 변동폭: {ndx_change:.2f}%\n"
-        f"VIX: {vix_value:.2f} → {comments['vix_c']} "
-        f"(전일 대비 {comments['vix_change_c']})\n\n"
-        f"MACD: {data['macd']:.4f} / Signal: {data['macd_signal']:.4f} / Hist: {data['macd_hist']:.4f}\n"
-        f"MACD 해석: {comments['macd_level_c']} / {comments['macd_signal_c']} / {comments['macd_hist_c']}\n"
-        f"MACD 변화: MACD {comments['macd_change_c']}, "
-        f"Signal {comments['macd_signal_change_c']}, "
-        f"Hist {comments['macd_hist_change_c']}\n\n"
-        f"RSI(14): {data['rsi']:.2f} → {comments['rsi_c']} "
-        f"(전일 대비 {comments['rsi_change_c']})\n"
-        f"볼린저 위치: {data['bb_pos']:.1f}% (상단 {data['bb_upper']:.2f}, 하단 {data['bb_lower']:.2f}) "
-        f"→ {comments['bb_c']} (전일 대비 {comments['bb_change_c']})\n"
-        f"Stoch Slow %K/%D: {data['stoch_k']:.2f} / {data['stoch_d']:.2f} → {comments['stoch_c']} "
-        f"(K 변화 {comments['stoch_k_change_c']}, D 변화 {comments['stoch_d_change_c']})\n"
-        f"CCI(20): {data['cci']:.2f} → {comments['cci_c']} "
-        f"(전일 대비 {comments['cci_change_c']})\n"
-        f"Williams %R: {data['williams_r']:.2f} → {comments['wr_c']} "
-        f"(전일 대비 {comments['wr_change_c']})\n"
-        f"ATR 비율: {data['atr_ratio']*100:.2f}% → {comments['atr_c']} "
-        f"(전일 대비 {comments['atr_change_c']})\n"
-        f"20MA 괴리율: {data['ma_deviation_pct']:.2f}% → {comments['ma_c']} "
-        f"(전일 대비 {comments['ma_change_c']})\n"
-        f"{high_52w_line}\n"
-        f"기술 점수(원점수): {tech_score_raw}/100\n"
-        f"뉴스 감성 점수: {sentiment_score}/100\n"
-        f"Proxy FGI: {proxy_fgi}/100\n"
-        f"USD/KRW: {fx_now:,.2f}원\n"
-        f"미국 10년물 금리: {tnx_now:.2f}%\n"
-        f"WTI 유가: {oil_now:.2f}달러\n\n"
-        f"총 점수: {final_score}/100\n"
-        f"75점 이상 매도 시작, 90점 이상 전량 매도\n"
-        f"결론: {result}\n"
-        f"매수 금액: {buy_amount:,}원\n\n"
-        f"[포트폴리오 매수 금액]\n{portfolio_text}\n\n"
-        f"[주요 뉴스]\n - " + "\n - ".join(headlines[:3])
-    )
+    # -----------------------------
+    # 텔레그램 메시지 (깔끔한 포맷)
+    # -----------------------------
+    telegram_message = f"""
+📊 [정수 버블 체크]
+
+📈 지수 변동
+- S&P500: {sp_change:.2f}%
+- NASDAQ: {ndx_change:.2f}%
+- VIX: {vix_value:.2f}
+  → {comments['vix_c']}
+  → 전일 대비 {comments['vix_change_c']}
+
+🔍 기술적 지표 요약
+
+🔸 MACD
+- MACD / Signal / Hist: {data['macd']:.4f} / {data['macd_signal']:.4f} / {data['macd_hist']:.4f}
+- 해석: {comments['macd_level_c']} / {comments['macd_signal_c']} / {comments['macd_hist_c']}
+- 변화:
+  • MACD {comments['macd_change_c']}
+  • Signal {comments['macd_signal_change_c']}
+  • Hist {comments['macd_hist_change_c']}
+
+🔸 RSI(14)
+- {data['rsi']:.2f} → {comments['rsi_c']}
+- 변화: {comments['rsi_change_c']}
+
+🔸 Bollinger Band
+- 위치: {data['bb_pos']:.1f}% (상단 {data['bb_upper']:.2f}, 하단 {data['bb_lower']:.2f})
+- 해석: {comments['bb_c']}
+- 변화: {comments['bb_change_c']}
+
+🔸 Stochastic Slow
+- %K / %D: {data['stoch_k']:.2f} / {data['stoch_d']:.2f}
+- 해석: {comments['stoch_c']}
+- 변화:
+  • K {comments['stoch_k_change_c']}
+  • D {comments['stoch_d_change_c']}
+
+🔸 CCI(20)
+- {data['cci']:.2f} → {comments['cci_c']}
+- 변화: {comments['cci_change_c']}
+
+🔸 Williams %R
+- {data['williams_r']:.2f} → {comments['wr_c']}
+- 변화: {comments['wr_change_c']}
+
+🔸 ATR 비율
+- {data['atr_ratio']*100:.2f}% → {comments['atr_c']}
+- 변화: {comments['atr_change_c']}
+
+🔸 20MA 괴리율
+- {data['ma_deviation_pct']:.2f}% → {comments['ma_c']}
+- 변화: {comments['ma_change_c']}
+
+🔸 52주 고점 대비
+{high52_line}
+
+🧮 점수
+- 기술 점수: {tech_score_raw}/100
+- 뉴스 감성: {sentiment_score}/100
+- Proxy FGI: {proxy_fgi}/100
+- 총 점수: {final_score}/100
+
+🧭 결론
+- 75점↑ 매도 / 90점↑ 전량 매도
+- 현재: {result}
+- 매수 금액: {buy_amount:,}원
+
+💼 포트폴리오 매수 금액
+{portfolio_text}
+
+📰 주요 뉴스
+ - {headlines[0] if len(headlines) > 0 else "없음"}
+ - {headlines[1] if len(headlines) > 1 else ""}
+ - {headlines[2] if len(headlines) > 2 else ""}
+"""
 
     send_telegram(telegram_message)
     print("텔레그램 전송 완료")
+
 
 if __name__ == "__main__":
     main()
