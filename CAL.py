@@ -332,17 +332,17 @@ def main():
     # -----------------------------
     avg_change = (sp_change + ndx_change) / 2
 
-    if final_score >= 86:
+    if final_score >= 90:
         result = "전량 매도"
         buy_amount = 0
 
-    elif final_score >= 70:
+    elif final_score >= 75:
         result = "분할 매도"
         buy_amount = 0
         
     else:
         result = "모으기"
-        buy_amount = int(10000 + ((69 - final_score) / 69) * 20000)
+        buy_amount = int(10000 + ((74 - final_score) / 74) * 20000)
         if avg_change < 0:
             buy_amount = 10000
 
@@ -389,13 +389,14 @@ def main():
         f"ATR 비율: {atr_ratio*100:.2f}%\n"
         f"20MA괴리율: {ma_deviation_pct:.2f}%\n"
         f"{high_52w_line}"
+        f"기술 점수: {tech_score_raw}/100\n"
         f"뉴스 감성 점수: {sentiment_score}/100\n"
         f"Proxy FGI: {proxy_fgi}/100\n"
         f"USD/KRW: {fx_now:,.2f}원\n"
         f"미국 10년물 금리: {tnx_now:.2f}%\n"
         f"WTI 유가: {oil_now:.2f}달러\n\n"
-        f"기술 점수(원점수): {tech_score_raw}/100\n"
         f"총 점수: {final_score}/100\n"
+        f"75점 이상 매도시작, 90점이상 전량매도"
         f"결론: {result}\n"
         f"매수 금액: {buy_amount:,}원\n\n"
         f"[포트폴리오 매수 금액]\n{portfolio_text}\n\n"
