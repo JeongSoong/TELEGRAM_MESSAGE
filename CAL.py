@@ -124,7 +124,6 @@ def compute_indicators(df: pd.DataFrame):
         "atr_ratio": atr_ratio_latest,
         "ma_deviation_pct": ma_deviation_pct,
         "price": price,
-        "vix_c": vix_c
     }
 
 # -----------------------------
