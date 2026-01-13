@@ -2,7 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 import yfinance as yf
 import pandas as pd
-from textblob import TextBlob
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 # -----------------------------
 # 텔레그램 전송
@@ -15,13 +15,13 @@ def send_telegram(message):
     requests.post(url, data=payload)
 
 # -----------------------------
-# Google News RSS 기반 감성 분석 (Railway 100% 호환)
+# 뉴스 감성 분석 (RSS + VADER)
 # -----------------------------
-def get_sentiment_score():
+def get_news_sentiment():
     try:
         url = "https://news.google.com/rss/search?q=stock+market&hl=en-US&gl=US&ceid=US:en"
-        html = requests.get(url).text
-        soup = BeautifulSoup(html, "xml")
+        xml = requests.get(url).text
+        soup = BeautifulSoup(xml, "xml")
 
         items = soup.find_all("item")[:10]
         headlines = [item.title.get_text(strip=True) for item in items]
@@ -29,10 +29,12 @@ def get_sentiment_score():
         if not headlines:
             return 50, ["뉴스 없음"]
 
-        polarity_sum = sum(TextBlob(h).sentiment.polarity for h in headlines)
-        avg_polarity = polarity_sum / len(headlines)
+        analyzer = SentimentIntensityAnalyzer()
+        scores = [analyzer.polarity_scores(h)["compound"] for h in headlines]
 
-        score_100 = int((avg_polarity + 1) * 50)
+        avg_score = sum(scores) / len(scores)  # -1 ~ +1
+        score_100 = int((avg_score + 1) * 50)  # 0~100 변환
+
         return score_100, headlines
 
     except:
@@ -41,161 +43,94 @@ def get_sentiment_score():
 # -----------------------------
 # 기술적 지표 (MACD, RSI, 볼린저)
 # -----------------------------
-def compute_indicators(close_series: pd.Series):
+def compute_indicators(close_series):
     delta = close_series.diff()
-    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-    loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = -delta.where(delta < 0, 0).rolling(14).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
     rsi_latest = float(rsi.iloc[-1])
 
-    ema12 = close_series.ewm(span=12, adjust=False).mean()
-    ema26 = close_series.ewm(span=26, adjust=False).mean()
-    macd_line = ema12 - ema26
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    ema12 = close_series.ewm(span=12).mean()
+    ema26 = close_series.ewm(span=26).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9).mean()
+    macd_hist = macd - signal
 
-    macd_latest = float(macd_line.iloc[-1])
-    signal_latest = float(signal_line.iloc[-1])
-    macd_hist = macd_latest - signal_latest
+    macd_latest = float(macd.iloc[-1])
+    signal_latest = float(signal.iloc[-1])
+    hist_latest = float(macd_hist.iloc[-1])
 
-    ma20 = close_series.rolling(window=20).mean()
-    std20 = close_series.rolling(window=20).std()
+    ma20 = close_series.rolling(20).mean()
+    std20 = close_series.rolling(20).std()
     upper = float((ma20 + 2 * std20).iloc[-1])
     lower = float((ma20 - 2 * std20).iloc[-1])
     price = float(close_series.iloc[-1])
 
-    bb_pos = (price - lower) / (upper - lower) * 100 if upper != lower else 50
+    bb_pos = (price - lower) / (upper - lower) * 100
 
-    return {
-        "rsi": rsi_latest,
-        "macd": macd_latest,
-        "macd_signal": signal_latest,
-        "macd_hist": macd_hist,
-        "bb_pos": bb_pos,
-        "bb_upper": upper,
-        "bb_lower": lower,
-    }
+    return rsi_latest, macd_latest, signal_latest, hist_latest, bb_pos, upper, lower
 
 # -----------------------------
-# 공포탐욕지수(FGI) - CNN 공식 API
+# Proxy FGI (서버 100% 호환)
 # -----------------------------
-def get_fgi():
+def compute_proxy_fgi():
     try:
-        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-        data = requests.get(url).json()
+        vix = yf.Ticker("^VIX").history(period="1d")["Close"][0]
+        putcall = yf.Ticker("^PCR").history(period="1d")["Close"][0]
+        junk = yf.Ticker("HYG").history(period="1d")["Close"][0]
+        gold = yf.Ticker("GC=F").history(period="1d")["Close"][0]
+        sp = yf.Ticker("^GSPC").history(period="1d")["Close"][0]
 
-        value = int(data["fear_and_greed"]["score"])
+        safe_haven = gold / sp
 
-        if value <= 25: label = "극단적 공포"
-        elif value <= 45: label = "공포"
-        elif value < 55: label = "중립"
-        elif value < 75: label = "탐욕"
-        else: label = "극단적 탐욕"
+        # 0~100 점수화
+        vix_score = max(0, min(100, 100 - vix * 3))
+        putcall_score = max(0, min(100, 150 - putcall * 100))
+        junk_score = max(0, min(100, junk / 10))
+        safe_score = max(0, min(100, safe_haven * 100))
 
-        return value, label
+        proxy_fgi = int((vix_score + putcall_score + junk_score + safe_score) / 4)
+
+        return proxy_fgi
 
     except:
-        return None, "FGI 오류"
-
-# -----------------------------
-# 환율 / 금리 / 유가
-# -----------------------------
-def get_macro_data():
-    try:
-        fx = yf.Ticker("USDKRW=X").history(period="1d")
-        fx_now = float(fx["Close"][0])
-
-        tnx = yf.Ticker("^TNX").history(period="1d")
-        tnx_now = float(tnx["Close"][0])
-
-        oil = yf.Ticker("CL=F").history(period="1d")
-        oil_now = float(oil["Close"][0])
-
-        return fx_now, tnx_now, oil_now
-    except:
-        return None, None, None
-
-# -----------------------------
-# 시장 데이터 수집
-# -----------------------------
-def fetch_market_data():
-    sp_hist = yf.Ticker("^GSPC").history(period="30d")
-    ndx_hist = yf.Ticker("^NDX").history(period="1d")
-    vix_hist = yf.Ticker("^VIX").history(period="1d")
-
-    sp_change = float((sp_hist["Close"].iloc[-1] - sp_hist["Open"].iloc[-1]) / sp_hist["Open"].iloc[-1] * 100)
-    ndx_change = float((ndx_hist["Close"][0] - ndx_hist["Open"][0]) / ndx_hist["Open"][0] * 100)
-    vix_value = float(vix_hist["Close"][0])
-
-    indicators = compute_indicators(sp_hist["Close"])
-
-    sentiment_score, headlines = get_sentiment_score()
-    fgi_value, fgi_label = get_fgi()
-    fx_now, tnx_now, oil_now = get_macro_data()
-
-    return {
-        "sp_change": sp_change,
-        "ndx_change": ndx_change,
-        "vix_value": vix_value,
-        **indicators,
-        "sentiment_score": sentiment_score,
-        "headlines": headlines,
-        "fgi_value": fgi_value,
-        "fgi_label": fgi_label,
-        "fx_now": fx_now,
-        "tnx_now": tnx_now,
-        "oil_now": oil_now,
-    }
+        return 50  # 중립
 
 # -----------------------------
 # 메인 실행
 # -----------------------------
 def main():
-    data = fetch_market_data()
+    sp = yf.Ticker("^GSPC").history(period="30d")
+    ndx = yf.Ticker("^NDX").history(period="1d")
+    vix = yf.Ticker("^VIX").history(period="1d")
 
-    sp_change = data["sp_change"]
-    ndx_change = data["ndx_change"]
-    vix_value = data["vix_value"]
-    rsi = data["rsi"]
-    macd = data["macd"]
-    macd_signal = data["macd_signal"]
-    macd_hist = data["macd_hist"]
-    bb_pos = data["bb_pos"]
-    bb_upper = data["bb_upper"]
-    bb_lower = data["bb_lower"]
-    sentiment_score = data["sentiment_score"]
-    headlines = data["headlines"]
-    fgi_value = data["fgi_value"]
-    fgi_label = data["fgi_label"]
-    fx_now = data["fx_now"]
-    tnx_now = data["tnx_now"]
-    oil_now = data["oil_now"]
+    sp_change = float((sp["Close"].iloc[-1] - sp["Open"].iloc[-1]) / sp["Open"].iloc[-1] * 100)
+    ndx_change = float((ndx["Close"][0] - ndx["Open"][0]) / ndx["Open"][0] * 100)
+    vix_value = float(vix["Close"][0])
+
+    rsi, macd, signal, hist, bb_pos, bb_upper, bb_lower = compute_indicators(sp["Close"])
+
+    sentiment_score, headlines = get_news_sentiment()
+    proxy_fgi = compute_proxy_fgi()
+
+    fx = yf.Ticker("USDKRW=X").history(period="1d")["Close"][0]
+    tnx = yf.Ticker("^TNX").history(period="1d")["Close"][0]
+    oil = yf.Ticker("CL=F").history(period="1d")["Close"][0]
 
     # -----------------------------
-    # 기존 점수 계산
+    # 100점 만점 종합 점수
     # -----------------------------
-    raw_score = 0
+    tech_score = 0
+    if rsi >= 80: tech_score += 10
+    if bb_pos >= 80: tech_score += 10
+    if macd > signal: tech_score += 10
+    if vix_value <= 15: tech_score += 10
 
-    if rsi >= 90: raw_score += 3
-    elif rsi >= 85: raw_score += 2
-    elif rsi >= 80: raw_score += 1
+    news_score = sentiment_score * 0.3
+    fgi_score = proxy_fgi * 0.3
 
-    change = max(abs(sp_change), abs(ndx_change))
-    if change >= 10: raw_score += 3
-    elif change >= 8: raw_score += 2
-    elif change >= 5: raw_score += 1
-
-    if vix_value <= 12: raw_score += 3
-    elif vix_value <= 14: raw_score += 2
-    elif vix_value <= 16: raw_score += 1
-
-    if sentiment_score >= 70: raw_score += 2
-    elif sentiment_score >= 55: raw_score += 1
-
-    # -----------------------------
-    # 총점수 100점 환산
-    # -----------------------------
-    final_score = int(raw_score / 15 * 100)
+    final_score = int(tech_score + news_score + fgi_score)
 
     if final_score >= 70:
         result = "전량 매도"
@@ -235,14 +170,14 @@ def main():
         f"VIX: {vix_value:.2f}\n\n"
 
         f"RSI(14): {rsi:.2f}\n"
-        f"MACD: {macd:.4f} / Signal: {macd_signal:.4f} / Hist: {macd_hist:.4f}\n"
+        f"MACD: {macd:.4f} / Signal: {signal:.4f} / Hist: {hist:.4f}\n"
         f"볼린저 위치: {bb_pos:.1f}% (상단 {bb_upper:.2f}, 하단 {bb_lower:.2f})\n\n"
 
         f"뉴스 감성 점수: {sentiment_score}/100\n"
-        f"공포탐욕지수(FGI): {fgi_value} ({fgi_label})\n"
-        f"USD/KRW: {fx_now:,.2f}원\n"
-        f"미국 10년물 금리: {tnx_now:.2f}%\n"
-        f"WTI 유가: {oil_now:.2f}달러\n\n"
+        f"Proxy FGI: {proxy_fgi}/100\n"
+        f"USD/KRW: {fx:,.2f}원\n"
+        f"미국 10년물 금리: {tnx:.2f}%\n"
+        f"WTI 유가: {oil:.2f}달러\n\n"
 
         f"총 점수: {final_score}/100\n"
         f"결론: {result}\n\n"
