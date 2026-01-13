@@ -396,7 +396,7 @@ def main():
         f"미국 10년물 금리: {tnx_now:.2f}%\n"
         f"WTI 유가: {oil_now:.2f}달러\n\n"
         f"총 점수: {final_score}/100\n"
-        f"75점 이상 매도시작, 90점이상 전량매도"
+        f"75점 이상 매도시작, 90점이상 전량매도\n"
         f"결론: {result}\n"
         f"매수 금액: {buy_amount:,}원\n\n"
         f"[포트폴리오 매수 금액]\n{portfolio_text}\n\n"
