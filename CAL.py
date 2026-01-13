@@ -77,7 +77,7 @@ def compute_indicators(close_series: pd.Series):
     }
 
 # -----------------------------
-# 공포탐욕지수(FGI) - CNN API 기반 (안정적)
+# 공포탐욕지수(FGI) - CNN 공식 API
 # -----------------------------
 def get_fgi():
     try:
