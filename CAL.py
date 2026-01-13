@@ -124,6 +124,7 @@ def compute_indicators(df: pd.DataFrame):
         "atr_ratio": atr_ratio_latest,
         "ma_deviation_pct": ma_deviation_pct,
         "price": price,
+        "vix_c": vix_c
     }
 
 # -----------------------------
@@ -139,6 +140,20 @@ def indicator_comments(data, high_52w):
     atr_ratio = data["atr_ratio"]
     ma_dev = data["ma_deviation_pct"]
     price = data["price"]
+
+    # VIX
+    if vix_value <= 12:
+        vix_c = "12 이하로 극저변동성 (과열·버블 패턴)"
+    elif vix_value <= 15:
+        vix_c = "12~15로 낮은 변동성 (과열 가능성)"
+    elif vix_value <= 20:
+        vix_c = "15~20으로 정상 변동성"
+    elif vix_value <= 25:
+        vix_c = "20~25로 변동성 증가 (주의)"
+    elif vix_value <= 35:
+        vix_c = "25~35로 공포 구간"
+    else:
+        vix_c = "35 이상으로 패닉 수준"
 
     # RSI
     if rsi >= 80:
@@ -421,9 +436,10 @@ def main():
         f"[정수 버블 체크]\n"
         f"S&P 변동폭: {sp_change:.2f}%\n"
         f"나스닥 변동폭: {ndx_change:.2f}%\n"
-        f"VIX: {vix_value:.2f}\n\n"
-        f"RSI(14): {data['rsi']:.2f} → {comments['rsi_c']}\n"
         f"MACD: {data['macd']:.4f} / Signal: {data['macd_signal']:.4f} / Hist: {data['macd_hist']:.4f}\n"
+        
+        f"VIX: {vix_value:.2f} → {comments['vix_c']}\n"
+        f"RSI(14): {data['rsi']:.2f} → {comments['rsi_c']}\n"
         f"볼린저 위치: {data['bb_pos']:.1f}% (상단 {data['bb_upper']:.2f}, 하단 {data['bb_lower']:.2f}) → {comments['bb_c']}\n"
         f"Stoch Slow %K/%D: {data['stoch_k']:.2f} / {data['stoch_d']:.2f} → {comments['stoch_c']}\n"
         f"CCI(20): {data['cci']:.2f} → {comments['cci_c']}\n"
