@@ -39,7 +39,7 @@ def get_sentiment_score():
         return 50, ["뉴스 분석 실패"]
 
 # -----------------------------
-# 기술적 지표 (RSI, MACD, 볼린저, Stoch, CCI, WilliamsR, ATR,乖離율, 52주 고점 등)
+# 기술적 지표 (RSI, MACD, 볼린저, Stoch, CCI, WilliamsR, ATR,乖離율)
 # -----------------------------
 def compute_indicators(df: pd.DataFrame):
     close = df["Close"]
@@ -127,48 +127,59 @@ def compute_indicators(df: pd.DataFrame):
     }
 
 # -----------------------------
-# 정교한 Proxy FGI (7개 요소 기반)
+# 정교한 Proxy FGI (Put/Call 제거, 6개 요소 기반)
 # -----------------------------
 def compute_proxy_fgi():
     try:
         # 1) VIX
         vix = yf.Ticker("^VIX").history(period="10d")["Close"]
-        vix_now = vix.iloc[-1]
-        vix_change = (vix_now - vix.iloc[0]) / vix.iloc[0] * 100
+        if len(vix) < 2:
+            return 50
+        vix_now = float(vix.iloc[-1])
+        vix_change = (vix_now - float(vix.iloc[0])) / float(vix.iloc[0]) * 100
         vix_score = max(0, min(100, 100 - vix_now * 3))
 
-        # 2) Put/Call Ratio
-        putcall = yf.Ticker("^PCR").history(period="1d")["Close"][0]
-        putcall_score = max(0, min(100, 150 - putcall * 100))
-
-        # 3) Junk Bond Demand
+        # 2) Junk Bond Demand
         junk = yf.Ticker("HYG").history(period="30d")["Close"]
-        junk_now = junk.iloc[-1]
-        junk_change = (junk_now - junk.iloc[0]) / junk.iloc[0] * 100
+        if len(junk) < 2:
+            return 50
+        junk_now = float(junk.iloc[-1])
+        junk_change = (junk_now - float(junk.iloc[0])) / float(junk.iloc[0]) * 100
         junk_score = max(0, min(100, 50 + junk_change * 5))
 
-        # 4) Safe Haven Demand (Gold vs S&P)
-        gold = yf.Ticker("GC=F").history(period="1d")["Close"][0]
-        sp = yf.Ticker("^GSPC").history(period="1d")["Close"][0]
-        safe_ratio = gold / sp
+        # 3) Safe Haven Demand (Gold vs S&P)
+        gold_hist = yf.Ticker("GC=F").history(period="1d")["Close"]
+        sp_hist = yf.Ticker("^GSPC").history(period="1d")["Close"]
+        if len(gold_hist) == 0 or len(sp_hist) == 0:
+            return 50
+        gold = float(gold_hist.iloc[-1])
+        sp = float(sp_hist.iloc[-1])
+        safe_ratio = gold / sp if sp != 0 else 1
         safe_score = max(0, min(100, 100 - safe_ratio * 100))
 
-        # 5) Momentum (125일 모멘텀)
+        # 4) Momentum (125일 모멘텀)
         sp125 = yf.Ticker("^GSPC").history(period="125d")["Close"]
-        momentum = (sp125.iloc[-1] - sp125.iloc[0]) / sp125.iloc[0] * 100
+        if len(sp125) < 2:
+            return 50
+        momentum = (float(sp125.iloc[-1]) - float(sp125.iloc[0])) / float(sp125.iloc[0]) * 100
         momentum_score = max(0, min(100, 50 + momentum))
 
-        # 6) Breadth (상승 종목 비율)
-        adv = yf.Ticker("^ADVN").history(period="1d")["Close"][0]
-        dec = yf.Ticker("^DECL").history(period="1d")["Close"][0]
-        breadth_ratio = adv / (adv + dec)
-        breadth_score = int(breadth_ratio * 100)
+        # 5) Breadth (상승 종목 비율)
+        adv_hist = yf.Ticker("^ADVN").history(period="1d")["Close"]
+        dec_hist = yf.Ticker("^DECL").history(period="1d")["Close"]
+        if len(adv_hist) == 0 or len(dec_hist) == 0:
+            breadth_score = 50
+        else:
+            adv = float(adv_hist.iloc[-1])
+            dec = float(dec_hist.iloc[-1])
+            breadth_ratio = adv / (adv + dec) if (adv + dec) != 0 else 0.5
+            breadth_score = int(breadth_ratio * 100)
 
-        # 7) Volatility Change
+        # 6) Volatility Change
         vol_score = max(0, min(100, 100 - abs(vix_change) * 2))
 
-        proxy_fgi = int((vix_score + putcall_score + junk_score + safe_score +
-                         momentum_score + breadth_score + vol_score) / 7)
+        proxy_fgi = int((vix_score + junk_score + safe_score +
+                         momentum_score + breadth_score + vol_score) / 6)
 
         return proxy_fgi
 
@@ -180,9 +191,14 @@ def compute_proxy_fgi():
 # -----------------------------
 def get_macro_data():
     try:
-        fx = yf.Ticker("USDKRW=X").history(period="1d")["Close"][0]
-        tnx = yf.Ticker("^TNX").history(period="1d")["Close"][0]
-        oil = yf.Ticker("CL=F").history(period="1d")["Close"][0]
+        fx_hist = yf.Ticker("USDKRW=X").history(period="1d")["Close"]
+        tnx_hist = yf.Ticker("^TNX").history(period="1d")["Close"]
+        oil_hist = yf.Ticker("CL=F").history(period="1d")["Close"]
+
+        fx = float(fx_hist.iloc[-1]) if len(fx_hist) > 0 else None
+        tnx = float(tnx_hist.iloc[-1]) if len(tnx_hist) > 0 else None
+        oil = float(oil_hist.iloc[-1]) if len(oil_hist) > 0 else None
+
         return fx, tnx, oil
     except:
         return None, None, None
@@ -191,20 +207,25 @@ def get_macro_data():
 # 시장 데이터 수집
 # -----------------------------
 def fetch_market_data():
-    # 252일로 52주 고점 계산 가능하게
-    sp_hist = yf.Ticker("^GSPC").history(period="252d")
+    sp_all = yf.Ticker("^GSPC").history(period="252d")
+    sp_hist = sp_all.iloc[-60:]  # 최근 60일로 기술지표 계산
     ndx_hist = yf.Ticker("^NDX").history(period="1d")
     vix_hist = yf.Ticker("^VIX").history(period="1d")
 
-    # 일간 변동률 (가장 최근 날)
-    sp_today = sp_hist.iloc[-1]
-    sp_yday = sp_hist.iloc[-2]
+    # 일간 변동률 (S&P)
+    sp_today = sp_all.iloc[-1]
     sp_change = float((sp_today["Close"] - sp_today["Open"]) / sp_today["Open"] * 100)
 
-    ndx_change = float((ndx_hist["Close"][0] - ndx_hist["Open"][0]) / ndx_hist["Open"][0] * 100)
-    vix_value = float(vix_hist["Close"][0])
+    # 나스닥 변동률
+    ndx_close = ndx_hist["Close"]
+    ndx_open = ndx_hist["Open"]
+    ndx_change = float((float(ndx_close.iloc[-1]) - float(ndx_open.iloc[-1])) / float(ndx_open.iloc[-1]) * 100)
 
-    # 기술 지표 계산 (마지막 60일 정도만 사용해도 충분하지만 전체 close 사용)
+    # VIX
+    vix_close = vix_hist["Close"]
+    vix_value = float(vix_close.iloc[-1])
+
+    # 기술 지표
     indicators = compute_indicators(sp_hist[["Open", "High", "Low", "Close"]])
 
     sentiment_score, headlines = get_sentiment_score()
@@ -212,7 +233,7 @@ def fetch_market_data():
     fx_now, tnx_now, oil_now = get_macro_data()
 
     # 52주 고점
-    high_52w = float(sp_hist["High"].max())
+    high_52w = float(sp_all["High"].max()) if len(sp_all) > 0 else 0
 
     return {
         "sp_change": sp_change,
@@ -266,47 +287,36 @@ def main():
     # -----------------------------
     tech_score_raw = 0
 
-    # 1) RSI 과열
     if rsi >= 80:
         tech_score_raw += 10
 
-    # 2) 볼린저 상단 근접
     if bb_pos >= 80:
         tech_score_raw += 10
 
-    # 3) MACD > 시그널 (상승 추세)
     if macd > macd_signal:
         tech_score_raw += 10
 
-    # 4) VIX 낮음 (안도/과열 구간)
     if vix_value <= 15:
         tech_score_raw += 10
 
-    # 5) Stochastic Slow 과열
     if stoch_k >= 80 and stoch_d >= 80:
         tech_score_raw += 10
 
-    # 6) CCI 과열
     if cci >= 100:
         tech_score_raw += 10
 
-    # 7) Williams %R 과열
     if williams_r >= -20:
         tech_score_raw += 10
 
-    # 8) ATR 변동성 낮음
     if atr_ratio <= 0.015:
         tech_score_raw += 10
 
-    # 9) 20MA乖離율 (5% 이상 위)
     if ma_deviation_pct >= 5:
         tech_score_raw += 10
 
-    # 10) 52주 고점 대비 95% 이상
     if high_52w > 0 and price >= high_52w * 0.95:
         tech_score_raw += 10
 
-    # tech_score_raw (0~100)을 40% 비중으로 축소
     tech_score = tech_score_raw * 0.4
 
     # -----------------------------
@@ -330,11 +340,13 @@ def main():
         result = "분할 매도"
         buy_amount = 0
 
+    elif final_score >= 40:
+        result = "유지"
+        buy_amount = 0
+
     else:
         result = "모으기"
-        # 0~39점 구간: 점수 낮을수록 많이 매수 (1만~3만)
-        buy_amount = int(10000 + ((69 - final_score) / 69) * 20000)
-        # 전날 S&P+나스닥 평균이 음수면 무조건 1만원
+        buy_amount = int(10000 + ((39 - final_score) / 39) * 20000)
         if avg_change < 0:
             buy_amount = 10000
 
@@ -358,6 +370,12 @@ def main():
 
     portfolio_text = "\n".join(portfolio_lines)
 
+    # 52주 고점 대비 문구 따로 생성 (여기서 끊기지 않도록)
+    if high_52w > 0:
+        high_52w_line = f"52주 고점 대비: {price / high_52w * 100:.2f}%\n\n"
+    else:
+        high_52w_line = ""
+
     # -----------------------------
     # 텔레그램 메시지
     # -----------------------------
@@ -366,7 +384,6 @@ def main():
         f"S&P 변동폭: {sp_change:.2f}%\n"
         f"나스닥 변동폭: {ndx_change:.2f}%\n"
         f"VIX: {vix_value:.2f}\n\n"
-
         f"RSI(14): {rsi:.2f}\n"
         f"MACD: {macd:.4f} / Signal: {macd_signal:.4f} / Hist: {macd_hist:.4f}\n"
         f"볼린저 위치: {bb_pos:.1f}% (상단 {bb_upper:.2f}, 하단 {bb_lower:.2f})\n"
@@ -375,7 +392,7 @@ def main():
         f"Williams %R: {williams_r:.2f}\n"
         f"ATR 비율: {atr_ratio*100:.2f}%\n"
         f"20MA乖離율: {ma_deviation_pct:.2f}%\n"
-        f"52주 고점 대비: {price/high_52w*100:.2f}%\n\n" if high_52w > 0 else "\n"
+        f"{high_52w_line}"
         f"뉴스 감성 점수: {sentiment_score}/100\n"
         f"Proxy FGI: {proxy_fgi}/100\n"
         f"USD/KRW: {fx_now:,.2f}원\n"
