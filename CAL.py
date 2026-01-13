@@ -339,14 +339,10 @@ def main():
     elif final_score >= 70:
         result = "분할 매도"
         buy_amount = 0
-
-    elif final_score >= 40:
-        result = "유지"
-        buy_amount = 0
-
+        
     else:
         result = "모으기"
-        buy_amount = int(10000 + ((39 - final_score) / 39) * 20000)
+        buy_amount = int(10000 + ((69 - final_score) / 69) * 20000)
         if avg_change < 0:
             buy_amount = 10000
 
@@ -391,7 +387,7 @@ def main():
         f"CCI(20): {cci:.2f}\n"
         f"Williams %R: {williams_r:.2f}\n"
         f"ATR 비율: {atr_ratio*100:.2f}%\n"
-        f"20MA乖離율: {ma_deviation_pct:.2f}%\n"
+        f"20MA괴리율: {ma_deviation_pct:.2f}%\n"
         f"{high_52w_line}"
         f"뉴스 감성 점수: {sentiment_score}/100\n"
         f"Proxy FGI: {proxy_fgi}/100\n"
