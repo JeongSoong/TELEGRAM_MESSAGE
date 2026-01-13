@@ -1,8 +1,8 @@
 import requests
 from bs4 import BeautifulSoup
 import yfinance as yf
-from textblob import TextBlob
 import pandas as pd
+from textblob import TextBlob
 
 # -----------------------------
 # 텔레그램 전송
@@ -15,17 +15,16 @@ def send_telegram(message):
     requests.post(url, data=payload)
 
 # -----------------------------
-# 뉴스 감성 분석 (100점 환산)
+# Yahoo Finance 뉴스 기반 감성 분석 (100점 환산)
 # -----------------------------
 def get_sentiment_score():
     try:
-        url = "https://news.google.com/search?q=stock+market&hl=en-US&gl=US&ceid=US:en"
-        html = requests.get(url).text
+        url = "https://finance.yahoo.com/topic/stock-market-news/"
+        html = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}).text
         soup = BeautifulSoup(html, "html.parser")
 
-        # 다양한 태그에서 제목 추출
-        candidates = soup.select("h3, a span, article h4, article h3")
-        headlines = [c.get_text(strip=True) for c in candidates][:10]
+        articles = soup.select("h3 a")[:10]
+        headlines = [a.get_text(strip=True) for a in articles]
 
         if not headlines:
             return 50, ["뉴스 없음"]
@@ -33,18 +32,16 @@ def get_sentiment_score():
         polarity_sum = sum(TextBlob(h).sentiment.polarity for h in headlines)
         avg_polarity = polarity_sum / len(headlines)
 
-        score_100 = int((avg_polarity + 1) * 50)  # -1→0, 0→50, +1→100
-
+        score_100 = int((avg_polarity + 1) * 50)
         return score_100, headlines
 
-    except Exception:
+    except:
         return 50, ["뉴스 분석 실패"]
 
 # -----------------------------
-# 기술적 지표 (MACD, RSI, 볼린저밴드)
+# 기술적 지표 (MACD, RSI, 볼린저)
 # -----------------------------
 def compute_indicators(close_series: pd.Series):
-    # RSI(14)
     delta = close_series.diff()
     gain = delta.where(delta > 0, 0).rolling(window=14).mean()
     loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
@@ -52,29 +49,22 @@ def compute_indicators(close_series: pd.Series):
     rsi = 100 - (100 / (1 + rs))
     rsi_latest = float(rsi.iloc[-1])
 
-    # MACD(12,26,9)
     ema12 = close_series.ewm(span=12, adjust=False).mean()
     ema26 = close_series.ewm(span=26, adjust=False).mean()
     macd_line = ema12 - ema26
     signal_line = macd_line.ewm(span=9, adjust=False).mean()
+
     macd_latest = float(macd_line.iloc[-1])
     signal_latest = float(signal_line.iloc[-1])
     macd_hist = macd_latest - signal_latest
 
-    # 볼린저밴드(20, 2)
     ma20 = close_series.rolling(window=20).mean()
     std20 = close_series.rolling(window=20).std()
-    upper_band = ma20 + 2 * std20
-    lower_band = ma20 - 2 * std20
-
+    upper = float((ma20 + 2 * std20).iloc[-1])
+    lower = float((ma20 - 2 * std20).iloc[-1])
     price = float(close_series.iloc[-1])
-    upper = float(upper_band.iloc[-1])
-    lower = float(lower_band.iloc[-1])
 
-    if upper != lower:
-        bb_pos = (price - lower) / (upper - lower) * 100
-    else:
-        bb_pos = 50.0
+    bb_pos = (price - lower) / (upper - lower) * 100 if upper != lower else 50
 
     return {
         "rsi": rsi_latest,
@@ -91,19 +81,15 @@ def compute_indicators(close_series: pd.Series):
 # -----------------------------
 def get_fgi():
     try:
-        url = "https://edition.cnn.com/markets/fear-and-greed"
+        url = "https://feargreedindex.com/"
         html = requests.get(url).text
         soup = BeautifulSoup(html, "html.parser")
 
-        value = None
-        for tag in soup.find_all(["span", "div"]):
-            text = tag.get_text(strip=True)
-            if text.isdigit() and 0 <= int(text) <= 100:
-                value = int(text)
-                break
-
-        if value is None:
+        value = soup.select_one(".fng-circle .fng-value")
+        if not value:
             return None, "FGI 파싱 실패"
+
+        value = int(value.get_text(strip=True))
 
         if value <= 25: label = "극단적 공포"
         elif value <= 45: label = "공포"
@@ -113,7 +99,7 @@ def get_fgi():
 
         return value, label
 
-    except Exception:
+    except:
         return None, "FGI 오류"
 
 # -----------------------------
