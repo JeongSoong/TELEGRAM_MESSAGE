@@ -15,30 +15,6 @@ def send_telegram(message):
     requests.post(url, data=payload)
 
 # -----------------------------
-# Google News RSS 기반 감성 분석
-# -----------------------------
-def get_sentiment_score():
-    try:
-        url = "https://news.google.com/rss/search?q=stock+market&hl=en-US&gl=US&ceid=US:en"
-        xml = requests.get(url).text
-        soup = BeautifulSoup(xml, "xml")
-
-        items = soup.find_all("item")[:10]
-        headlines = [item.title.get_text(strip=True) for item in items]
-
-        if not headlines:
-            return 50, ["뉴스 없음"]
-
-        polarity_sum = sum(TextBlob(h).sentiment.polarity for h in headlines)
-        avg_polarity = polarity_sum / len(headlines)
-        score_100 = int((avg_polarity + 1) * 50)
-
-        return score_100, headlines
-
-    except:
-        return 50, ["뉴스 분석 실패"]
-
-# -----------------------------
 # 기술적 지표 계산
 # -----------------------------
 def compute_indicators(df: pd.DataFrame):
@@ -248,7 +224,6 @@ def fetch_market_data():
 
     indicators = compute_indicators(sp_hist[["Open", "High", "Low", "Close"]])
 
-    sentiment_score, headlines = get_sentiment_score()
     proxy_fgi = compute_proxy_fgi()
     fx_now, tnx_now, oil_now = get_macro_data()
 
@@ -261,8 +236,6 @@ def fetch_market_data():
         "vix_prev": vix_prev,
         "high_52w": high_52w,
         **indicators,
-        "sentiment_score": sentiment_score,
-        "headlines": headlines,
         "proxy_fgi": proxy_fgi,
         "fx_now": fx_now,
         "tnx_now": tnx_now,
@@ -335,8 +308,6 @@ def main():
     vix_prev = data["vix_prev"]
     high_52w = data["high_52w"]
 
-    sentiment_score = data["sentiment_score"]
-    headlines = data["headlines"]
     proxy_fgi = data["proxy_fgi"]
     fx_now = data["fx_now"]
     tnx_now = data["tnx_now"]
@@ -361,7 +332,7 @@ def main():
     tech_score = tech_score_raw * 0.4
 
     # 최종 점수
-    final_score = int(tech_score + sentiment_score * 0.3 + proxy_fgi * 0.3)
+    final_score = int(tech_score + proxy_fgi * 0.5)
 
     # 행동 결정
     avg_change = (sp_change + ndx_change) / 2
@@ -466,7 +437,6 @@ def main():
 
 🧮 점수
 - 기술 점수: {tech_score_raw}/100
-- 뉴스 감성: {sentiment_score}/100
 - Proxy FGI: {proxy_fgi}/100
 - 총 점수: {final_score}/100
 
@@ -477,11 +447,6 @@ def main():
 
 💼 포트폴리오 매수 금액
 {portfolio_text}
-
-📰 주요 뉴스
- - {headlines[0] if len(headlines) > 0 else "없음"}
- - {headlines[1] if len(headlines) > 1 else ""}
- - {headlines[2] if len(headlines) > 2 else ""}
 """
 
     send_telegram(telegram_message)
