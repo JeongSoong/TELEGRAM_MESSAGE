@@ -380,13 +380,14 @@ def main():
 
     # 포트폴리오 배분
     portfolio = {
-        "TECL": 20,
-        "SOXL": 25,
+        "SOXL": 20,
+        "TNA": 20,
+        "TECL": 10,
         "ETHU": 10,
         "SOLT": 10,
         "INDL": 10,
-        "FNGU": 15,
-        "WEBL": 10
+        "FNGU": 10,
+        "CURE": 10,
     }
 
     portfolio_lines = []
