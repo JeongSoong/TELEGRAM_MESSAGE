@@ -14,7 +14,7 @@ def send_telegram(message):
     requests.post(url, data=payload)
 
 # -----------------------------
-# 디데이 날짜계산 (기존 유지)
+# 디데이 날짜계산
 # -----------------------------
 def get_dday(target_date_str="2026-06-15"):
     today = datetime.now().date()
@@ -23,7 +23,7 @@ def get_dday(target_date_str="2026-06-15"):
     return diff
 
 # -----------------------------
-# 기술적 지표 계산 (기존 유지)
+# 기술적 지표 계산
 # -----------------------------
 def compute_indicators(df: pd.DataFrame):
     close = df["Close"]
@@ -193,7 +193,7 @@ def compute_proxy_fgi():
         return 50, 50
 
 # -----------------------------
-# 환율 / 금리 / 유가 (최근 5일로 소폭 스무딩)
+# 환율 / 금리 / 유가 (최근 5일 평균으로 소폭 스무딩)
 # -----------------------------
 def get_macro_data():
     try:
@@ -242,18 +242,15 @@ def compute_macro_score(fx_now, tnx_now, oil_now):
 # 변동성 안정성 점수 (VIX + ATR 기반)
 # -----------------------------
 def compute_volatility_stability(vix_value, atr_ratio):
-    # 안정성: VIX 낮고 ATR 비율 낮을수록 높음
     if vix_value is None or atr_ratio is None:
         return 50
     score = 50
-    # VIX 영향
     if vix_value < 13:
         score += 30
     elif vix_value < 17:
         score += 10
     elif vix_value > 25:
         score -= 20
-    # ATR 영향 (비율 기준)
     if atr_ratio < 0.01:
         score += 10
     elif atr_ratio > 0.03:
@@ -288,7 +285,7 @@ def fetch_market_data():
 
     high_52w = float(sp_all["High"].max()) if len(sp_all) > 0 else 0
 
-    # 50MA, 200MA (추세용) (요청 2)
+    # 50MA, 200MA (추세용)
     ma50 = float(sp_all["Close"].rolling(50).mean().iloc[-1])
     ma200 = float(sp_all["Close"].rolling(200).mean().iloc[-1]) if len(sp_all) >= 200 else None
 
@@ -362,7 +359,7 @@ def indicator_comments(data, high_52w, vix_value, vix_prev):
     return comments
 
 # -----------------------------
-# 메인 실행 (요청한 1~6번만 반영)
+# 메인 실행 (요청한 1~6번만 반영, 행동기준 제거)
 # -----------------------------
 def main():
     data = fetch_market_data()
@@ -386,15 +383,22 @@ def main():
     macro_score = compute_macro_score(fx_now, tnx_now, oil_now)
 
     # Breadth 스케일링 (요청 4)
-    breadth_score = breadth_raw
+    # 구간 기반으로 과열/강세/약세/위험 반영
     if breadth_raw >= 70:
-        breadth_score = min(100, breadth_raw + 10)
+        breadth_score = 95
+        breadth_label = "과열"
     elif breadth_raw >= 60:
-        breadth_score = min(100, breadth_raw + 5)
-    elif breadth_raw <= 30:
-        breadth_score = max(0, breadth_raw - 10)
-    elif breadth_raw <= 40:
-        breadth_score = max(0, breadth_raw - 5)
+        breadth_score = 80
+        breadth_label = "강세"
+    elif breadth_raw >= 40:
+        breadth_score = 50
+        breadth_label = "중립"
+    elif breadth_raw >= 30:
+        breadth_score = 30
+        breadth_label = "약세"
+    else:
+        breadth_score = 10
+        breadth_label = "위험"
 
     # 코멘트 생성
     comments = indicator_comments(data, high_52w, vix_value, vix_prev)
@@ -434,60 +438,6 @@ def main():
         vol_stability * 0.05
     )
 
-    # 행동 결정 (요청 5: 세분화 포함)
-    avg_change = (sp_change + ndx_change) / 2
-
-    if final_score >= 90:
-        result = "전량 매도"
-        buy_amount = 0
-    elif final_score >= 80:
-        result = "강한 매도"
-        buy_amount = 0
-    elif final_score >= 70:
-        result = "분할 매도"
-        buy_amount = 0
-    elif final_score >= 60:
-        result = "관망"
-        buy_amount = 0
-    elif final_score >= 40:
-        result = "소량 모으기"
-        buy_amount = int(10000 + ((59 - final_score) / 59) * 10000)
-        if avg_change > 0:
-            buy_amount = 10000
-    else:
-        result = "적극 모으기"
-        buy_amount = int(20000 + ((39 - final_score) / 39) * 20000)
-        if avg_change > 0:
-            buy_amount = 20000
-
-    # 포트폴리오 배분 (기존 유지)
-    portfolio = {
-        "SOXL": 20,
-        "TNA": 20,
-        "TECL": 10,
-        "ETHU": 10,
-        "SOLT": 10,
-        "INDL": 10,
-        "FNGU": 10,
-        "CURE": 10,
-    }
-
-    portfolio_lines = []
-    for ticker, weight in portfolio.items():
-        amount = int(buy_amount * weight / 100)
-        portfolio_lines.append(f"{ticker}: {amount:,}원")
-    portfolio_text = "\n".join(portfolio_lines)
-
-    # 52주 고점 대비 (기존 유지)
-    if high_52w > 0:
-        ratio_now = data["price"] / high_52w * 100
-        high52_line = (
-            f"- {ratio_now:.2f}% → {comments['high52_c']}\n"
-            f"- 변화: {comments['high52_change_c']}\n"
-        )
-    else:
-        high52_line = "- 데이터 없음\n"
-
     # 요약 문구 (요청 6)
     if final_score >= 85:
         summary = "과열 구간에 근접 → 리스크 관리 최우선"
@@ -501,7 +451,7 @@ def main():
         summary = "공포·저평가 구간 → 공격적 매수 구간 후보"
 
     # -----------------------------
-    # 텔레그램 메시지 (요약 포함, 요청 6)
+    # 텔레그램 메시지 (요약 포함)
     # -----------------------------
     telegram_message = f"""
 📊 [정수 버블 체크]
@@ -509,7 +459,7 @@ def main():
 📌 요약
 - {summary}
 
-📈 지수 변동
+📈 지수 변동 (전일 종가 대비)
 - S&P500: {sp_change:.2f}%
 - NASDAQ: {ndx_change:.2f}%
 - VIX: {vix_value:.2f}
@@ -524,32 +474,23 @@ def main():
 🔎 추가 지표
 - 50MA: {ma50:.2f}
 - 200MA: {ma200 if ma200 is not None else '데이터 없음'}
-- Breadth (scaled): {breadth_score}/100
-- Macro score: {macro_score}/100
+- Breadth: {breadth_raw} → {breadth_label} (스케일: {breadth_score})
+- Macro score (FX/TNX/OIL): {macro_score}/100
 - Volatility stability: {vol_stability}/100
 
 🧮 점수
-- 기술 점수: {tech_score_raw}/100 (스케일링 적용)
+- 기술 점수 (raw): {tech_score_raw}/100 (스케일 적용: {tech_score:.1f})
 - Proxy FGI: {proxy_fgi}/100
 - 매크로 점수: {macro_score}/100
 - Breadth 점수: {breadth_score}/100
 - 변동성 안정성: {vol_stability}/100
 - 총 점수: {final_score}/100
 
-🧭 결론
-- 70~79: 분할 매도 / 80~89: 강한 매도 / 90↑: 전량 매도
-- 현재: {result}
-- 매수 금액: {buy_amount:,}원
-
-💼 포트폴리오 매수 금액
-{portfolio_text}
-
 📅 D-Day: 2026-06-15 (D-{dday})
 """
 
     send_telegram(telegram_message)
     print("텔레그램 전송 완료")
-
 
 if __name__ == "__main__":
     main()
