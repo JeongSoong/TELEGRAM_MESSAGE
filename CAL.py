@@ -1,6 +1,8 @@
 import requests
+from bs4 import BeautifulSoup
 import yfinance as yf
 import pandas as pd
+from textblob import TextBlob
 from datetime import datetime
 
 # -----------------------------
@@ -140,7 +142,7 @@ def format_change(curr, prev, digits=2):
 
 
 # -----------------------------
-# Proxy FGI 계산 (Breadth 분리)
+# Proxy FGI 계산
 # -----------------------------
 def compute_proxy_fgi():
     try:
@@ -302,7 +304,7 @@ def fetch_market_data():
         "ma200": ma200,
         **indicators,
         "proxy_fgi": proxy_fgi,
-        "breadth_raw": breadth_raw,
+        "breadth_score": breadth_raw,
         "fx_now": fx_now,
         "tnx_now": tnx_now,
         "oil_now": oil_now,
@@ -363,7 +365,7 @@ def indicator_comments(data, high_52w, vix_value, vix_prev):
 
 
 # -----------------------------
-# 메인 실행 (요청한 1~6번 반영, 행동기준은 원래 방식)
+# 메인 실행 (요청한 1~6번 반영, final_score 추천 구조 적용)
 # -----------------------------
 def main():
     data = fetch_market_data()
@@ -378,7 +380,7 @@ def main():
     ma200 = data["ma200"]
 
     proxy_fgi = data["proxy_fgi"]
-    breadth_raw = data["breadth_raw"]
+    breadth_raw = data["breadth_score"]
     fx_now = data["fx_now"]
     tnx_now = data["tnx_now"]
     oil_now = data["oil_now"]
@@ -432,10 +434,10 @@ def main():
     # 변동성 안정성 점수 (VIX + ATR)
     vol_stability = compute_volatility_stability(vix_value, data["atr_ratio"])
 
-    # 최종 점수 가중합 (tech 40%, proxy 30%, macro 15%, breadth 10%, vol 5%)
+    # 최종 점수 가중합 (추천 구조)
     final_score = int(
-        tech_score +
-        proxy_fgi * 0.3 +
+        tech_score * 0.40 +
+        proxy_fgi * 0.30 +
         macro_score * 0.15 +
         breadth_score * 0.10 +
         vol_stability * 0.05
@@ -453,7 +455,7 @@ def main():
     else:
         summary = "공포·저평가 구간 → 공격적 매수 구간 후보"
 
-    # 행동 결정 (원래 방식으로 복원)
+    # 행동 결정 (원래 방식 유지)
     avg_change = (sp_change + ndx_change) / 2
 
     if final_score >= 90:
@@ -513,19 +515,52 @@ def main():
   → 전일 대비 {comments['vix_change_c']}
 
 🔍 기술적 지표 요약
-- RSI: {data['rsi']:.2f} ({comments['rsi_c']})
-- Bollinger Band 위치: {data['bb_pos']:.1f}%
-- ATR 비율: {data['atr_ratio']*100:.2f}%
 
-🔎 추가 지표
-- 50MA: {ma50:.2f}
-- 200MA: {ma200 if ma200 is not None else '데이터 없음'}
-- Breadth: {breadth_raw} → {breadth_label} (스케일: {breadth_score})
-- Macro score (FX/TNX/OIL): {macro_score}/100
-- Volatility stability: {vol_stability}/100
+🔸 MACD
+- MACD / Signal / Hist: {data['macd']:.4f} / {data['macd_signal']:.4f} / {data['macd_hist']:.4f}
+- 해석: {comments['macd_level_c']} / {comments['macd_signal_c']} / {comments['macd_hist_c']}
+- 변화:
+  • MACD {comments['macd_change_c']}
+  • Signal {comments['macd_signal_change_c']}
+  • Hist {comments['macd_hist_change_c']}
+
+🔸 RSI(14)
+- {data['rsi']:.2f} → {comments['rsi_c']}
+- 변화: {comments['rsi_change_c']}
+
+🔸 Bollinger Band
+- 위치: {data['bb_pos']:.1f}% (상단 {data['bb_upper']:.2f}, 하단 {data['bb_lower']:.2f})
+- 해석: {comments['bb_c']}
+- 변화: {comments['bb_change_c']}
+
+🔸 Stochastic Slow
+- %K / %D: {data['stoch_k']:.2f} / {data['stoch_d']:.2f}
+- 해석: {comments['stoch_c']}
+- 변화:
+  • K {comments['stoch_k_change_c']}
+  • D {comments['stoch_d_change_c']}
+
+🔸 CCI(20)
+- {data['cci']:.2f} → {comments['cci_c']}
+- 변화: {comments['cci_change_c']}
+
+🔸 Williams %R
+- {data['williams_r']:.2f} → {comments['wr_c']}
+- 변화: {comments['wr_change_c']}
+
+🔸 ATR 비율
+- {data['atr_ratio']*100:.2f}% → {comments['atr_c']}
+- 변화: {comments['atr_change_c']}
+
+🔸 20MA 괴리율
+- {data['ma_deviation_pct']:.2f}% → {comments['ma_c']}
+- 변화: {comments['ma_change_c']}
+
+🔸 52주 고점 대비
+{high52_line}
 
 🧮 점수
-- 기술 점수 (raw): {tech_score_raw}/100 (스케일 적용: {tech_score:.1f})
+- 기술 점수: {tech_score_raw}/100
 - Proxy FGI: {proxy_fgi}/100
 - 매크로 점수: {macro_score}/100
 - Breadth 점수: {breadth_score}/100
@@ -533,6 +568,7 @@ def main():
 - 총 점수: {final_score}/100
 
 🧭 결론
+- 75점↑ 매도 / 90점↑ 전량 매도
 - 현재: {result}
 - 매수 금액: {buy_amount:,}원
 
