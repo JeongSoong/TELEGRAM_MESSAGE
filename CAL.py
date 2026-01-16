@@ -1,5 +1,4 @@
 import requests
-from bs4 import BeautifulSoup
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
@@ -15,7 +14,7 @@ CACHE_TTL = 3600  # 초 단위, 1시간 캐시
 DEBUG = False
 
 # -----------------------------
-# 1. 텔레그램 전송 (기존 값 유지)
+# 1. 텔레그램 전송
 # -----------------------------
 def send_telegram(message):
     bot_token = "8386665445:AAG5bEM30o9UzU-9NO9cGM7Lg0K7b1xcbFk"
@@ -37,7 +36,7 @@ def get_dday(target_date_str="2026-06-15"):
     return diff
 
 # -----------------------------
-# 3. 기술적 지표 계산 (원본 로직 유지)
+# 3. 기술적 지표 계산
 # -----------------------------
 def compute_indicators(df: pd.DataFrame):
     close = df["Close"]
@@ -156,6 +155,7 @@ def format_change(curr, prev, digits=2):
 # 4. 캐시 유틸리티 (FGI 캐시)
 # -----------------------------
 def load_cached_fgi():
+    """캐시된 FGI 값(정수) 반환. 만료되었거나 없으면 None."""
     if not os.path.exists(CACHE_FILE):
         return None
     try:
@@ -167,6 +167,17 @@ def load_cached_fgi():
         return None
     return None
 
+def get_cached_fgi_timestamp():
+    """캐시 파일의 타임스탬프(초) 반환. 없으면 None."""
+    if not os.path.exists(CACHE_FILE):
+        return None
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        return obj.get("ts")
+    except Exception:
+        return None
+
 def save_cached_fgi(fgi):
     try:
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
@@ -176,18 +187,21 @@ def save_cached_fgi(fgi):
 
 # -----------------------------
 # 5. CNN FGI + Breadth (응답 검증, 캐시, 안전 처리)
+#    — 변경: 실패 시 캐시에 저장된 마지막 값(있다면) 사용
 # -----------------------------
 def get_real_cnn_fgi_and_breadth():
     """
     CNN FGI를 시도하되, 실패하면 캐시에 저장된 마지막 값을 사용.
-    반환: (fgi_value:int, breadth_raw:int)
+    반환: (fgi_value:int, breadth_raw:int, fgi_from_cache:bool, breadth_from_cache:bool)
     """
     # 1) 캐시 확인(마지막 값 우선)
     cached = load_cached_fgi()
+    fgi_from_cache = False
     if cached is not None:
         if DEBUG:
             print("FGI 캐시 사용:", cached)
         fgi_value = cached
+        fgi_from_cache = True
     else:
         fgi_value = 50  # 기본값
 
@@ -203,6 +217,7 @@ def get_real_cnn_fgi_and_breadth():
                     fetched = int(data['market_rating_indicator']['rating_value'])
                     fgi_value = fetched
                     save_cached_fgi(fgi_value)
+                    fgi_from_cache = False
                     if DEBUG:
                         print("CNN FGI 수집 성공:", fgi_value)
                 else:
@@ -218,8 +233,9 @@ def get_real_cnn_fgi_and_breadth():
         if DEBUG:
             print("CNN FGI 요청 예외:", e)
 
-    # 3) Breadth 안전 처리 (항상 실시간 계산)
+    # 3) Breadth 안전 처리 (항상 실시간 계산; 실패 시 기본값 사용)
     breadth_raw = 50
+    breadth_from_cache = False
     try:
         adv_hist = yf.Ticker("^ADVN").history(period="1d")["Close"]
         dec_hist = yf.Ticker("^DECL").history(period="1d")["Close"]
@@ -229,19 +245,21 @@ def get_real_cnn_fgi_and_breadth():
 
         if adv is None or dec is None or (adv + dec) == 0:
             breadth_raw = 50
+            breadth_from_cache = True
             if DEBUG:
                 print("Breadth 데이터 부족, 기본값 사용")
         else:
             breadth_raw = int((adv / (adv + dec)) * 100)
+            breadth_from_cache = False
             if DEBUG:
                 print("Breadth 계산:", breadth_raw)
     except Exception as e:
         if DEBUG:
             print("Breadth 계산 에러:", e)
         breadth_raw = 50
+        breadth_from_cache = True
 
-    return fgi_value, breadth_raw
-
+    return fgi_value, breadth_raw, fgi_from_cache, breadth_from_cache
 
 # -----------------------------
 # 6. 매크로 데이터 (환율/금리/유가)
@@ -361,7 +379,7 @@ def fetch_market_data():
     indicators = compute_indicators(sp_hist[["Open", "High", "Low", "Close"]])
 
     # CNN FGI + Breadth (캐시 포함)
-    cnn_fgi, breadth_raw = get_real_cnn_fgi_and_breadth()
+    cnn_fgi, breadth_raw, fgi_from_cache, breadth_from_cache = get_real_cnn_fgi_and_breadth()
 
     # 매크로
     fx_now, tnx_now, oil_now = get_macro_data()
@@ -385,6 +403,8 @@ def fetch_market_data():
         "fx_now": fx_now,
         "tnx_now": tnx_now,
         "oil_now": oil_now,
+        "fgi_from_cache": fgi_from_cache,
+        "breadth_from_cache": breadth_from_cache,
     }
 
 # -----------------------------
@@ -464,6 +484,9 @@ def main():
     fx_now = data["fx_now"]
     tnx_now = data["tnx_now"]
     oil_now = data["oil_now"]
+
+    fgi_from_cache = data.get("fgi_from_cache", False)
+    breadth_from_cache = data.get("breadth_from_cache", False)
 
     # Macro score
     macro_score = compute_macro_score(fx_now, tnx_now, oil_now)
@@ -549,8 +572,19 @@ def main():
             buy_amount = 10000
     else:
         result = "모으기 (적극)"
-        # 안전하게 음수 방지
         buy_amount = max(0, int(10000 + ((49 - final_score) / 74) * 25000))
+
+    # -----------------------------
+    # 알림 라인 구성: FGI 또는 Breadth를 캐시/기본값으로 사용했을 때
+    # -----------------------------
+    alert_lines = []
+    if fgi_from_cache:
+        ts = get_cached_fgi_timestamp()
+        ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else "알 수 없음"
+        alert_lines.append(f"⚠️ 데이터 소스 오류 — CNN FGI를 최신으로 가져오지 못해 마지막 저장값({ts_str})을 사용합니다.")
+    if breadth_from_cache:
+        alert_lines.append("⚠️ Breadth 데이터 수집 실패 — 기본값(또는 마지막값)을 사용합니다.")
+    alert_line = "\n".join(alert_lines) + "\n\n" if alert_lines else ""
 
     # -----------------------------
     # 포트폴리오 배분 (수익률 기반 배수, 정규화 및 buy_amount 보호)
@@ -572,7 +606,6 @@ def main():
 
     total_adjusted = sum(adjusted_amounts.values()) if adjusted_amounts else 0
 
-    # buy_amount가 0이거나 total_adjusted가 0이면 scale을 0으로 설정해 0원 배분
     if total_adjusted <= 0 or buy_amount <= 0:
         scale = 0.0
     else:
@@ -598,10 +631,9 @@ def main():
         high52_line = "- 데이터 없음\n"
 
     # -----------------------------
-    # 텔레그램 메시지 생성
+    # 텔레그램 메시지 생성 (alert_line을 맨 앞에 추가)
     # -----------------------------
-    telegram_message = f"""
-📊 [정수 버블 체크 - Real CNN FGI]
+    telegram_message = f"""{alert_line}📊 [정수 버블 체크 - Real CNN FGI]
 
 📌 요약
 - {summary}
