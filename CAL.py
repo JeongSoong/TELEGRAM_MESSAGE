@@ -215,28 +215,52 @@ def get_macro_data():
 # Macro 계산 (환율 + 금리 + 유가 반영)
 # -----------------------------
 def compute_macro_score(fx_now, tnx_now, oil_now):
-    macro_score = 50  # 기본값
+    macro_score = 50  # 기본값 (모든 지표가 25년 4분기 수준일 때 50점)
 
-    # 1. 환율
+    # 1. 환율 (FX): 25년 4분기 평균인 1380~1420원을 중립(0)으로 설정
     if fx_now is not None:
-        if fx_now < 1300:
-            macro_score += 15
-        elif fx_now > 1400:
-            macro_score -= 15
+        if fx_now < 1320:
+            macro_score += 20  # 초저환율
+        elif fx_now < 1380:
+            macro_score += 10  # 양호
+        elif fx_now < 1420:
+            macro_score += 0   # 25.4Q 평균 (중립)
+        elif fx_now < 1460:
+            macro_score -= 10  # 현재 수준 (주의)
+        elif fx_now < 1500:
+            macro_score -= 20  # 위험
+        else:
+            macro_score -= 30  # 초비상
 
-    # 2. 금리
+    # 2. 금리 (TNX): 25년 4분기 박스권인 4.0~4.3%를 중립(0)으로 설정
     if tnx_now is not None:
         if tnx_now < 3.5:
-            macro_score += 15
-        elif tnx_now > 4.5:
-            macro_score -= 15
+            macro_score += 20  # 강력 호재
+        elif tnx_now < 4.0:
+            macro_score += 10  # 양호 (현재 4.16%는 이 근처)
+        elif tnx_now < 4.3:
+            macro_score += 0   # 25.4Q 평균 (중립)
+        elif tnx_now < 4.6:
+            macro_score -= 15  # 압박 시작
+        elif tnx_now < 4.9:
+            macro_score -= 25  # 위험
+        else:
+            macro_score -= 35  # 초비상
 
-    # 3. 유가 (WTI)
+    # 3. 유가 (WTI): 25년 4분기 기준점인 65~75불을 중립(0)으로 설정
     if oil_now is not None:
-        if oil_now > 90:
-            macro_score -= 10
-        elif oil_now < 70:
-            macro_score += 5
+        if oil_now < 55:
+            macro_score += 25  # 대폭락 호재 (인플레 종결)
+        elif oil_now < 65:
+            macro_score += 15  # 양호 (현재 59불은 여기! 🔥)
+        elif oil_now < 75:
+            macro_score += 0   # 25.4Q 평균 (중립)
+        elif oil_now < 85:
+            macro_score -= 10  # 부담
+        elif oil_now < 95:
+            macro_score -= 20  # 위험
+        else:
+            macro_score -= 35  # 초비상
 
     return max(0, min(100, macro_score))
 
@@ -504,11 +528,15 @@ def main():
     elif final_score >= 75:
         result = "분할 매도"
         buy_amount = 0
-    else:
+    elif final_score >= 50:
         result = "모으기"
         buy_amount = int(10000 + ((74 - final_score) / 74) * 20000)
         if avg_change > 0:
             buy_amount = 10000
+    else:
+        result = "모으기"
+        buy_amount = int(10000 + ((49 - final_score) / 74) * 25000)
+        
 
     # -----------------------------
     # 포트폴리오 배분 (개별 종목 당일 수익률 반영)
