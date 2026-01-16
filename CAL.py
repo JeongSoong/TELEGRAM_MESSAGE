@@ -266,7 +266,7 @@ def fetch_market_data():
     ndx_hist = yf.Ticker("^NDX").history(period="2d")
     vix_hist = yf.Ticker("^VIX").history(period="2d")
 
-    # 전일 종가 대비 오늘 종가 기준 변동률 (요청 1)
+    # 전일 종가 대비 오늘 종가 기준 변동률
     sp_yesterday = sp_all.iloc[-2]
     sp_today = sp_all.iloc[-1]
     sp_change = float((sp_today["Close"] - sp_yesterday["Close"]) / sp_yesterday["Close"] * 100)
@@ -323,7 +323,7 @@ def indicator_comments(data, high_52w, vix_value, vix_prev):
 
     comments["macd_change_c"] = format_change(data["macd"], data["macd_prev"], 4)
     comments["macd_signal_change_c"] = format_change(data["macd_signal"], data["macd_signal_prev"], 4)
-    comments["macd_hist_change_c"] = format_change(data["macd_hist"], data["macd_hist_prev"], 4)
+    comments["macd_hist_change_c"] = format_change(data["macd_hist"], data["macd_hist_prev'], 4)
 
     comments["rsi_c"] = "과열" if data["rsi"] >= 70 else "중립"
     comments["rsi_change_c"] = format_change(data["rsi"], data["rsi_prev"])
@@ -359,7 +359,7 @@ def indicator_comments(data, high_52w, vix_value, vix_prev):
     return comments
 
 # -----------------------------
-# 메인 실행 (요청한 1~6번만 반영, 행동기준 제거)
+# 메인 실행 (행동 기준: 세분화 이전 방식으로 복원)
 # -----------------------------
 def main():
     data = fetch_market_data()
@@ -379,11 +379,10 @@ def main():
     tnx_now = data["tnx_now"]
     oil_now = data["oil_now"]
 
-    # Macro score (요청 3)
+    # Macro score
     macro_score = compute_macro_score(fx_now, tnx_now, oil_now)
 
-    # Breadth 스케일링 (요청 4)
-    # 구간 기반으로 과열/강세/약세/위험 반영
+    # Breadth 스케일링 (구간화)
     if breadth_raw >= 70:
         breadth_score = 95
         breadth_label = "과열"
@@ -403,7 +402,7 @@ def main():
     # 코멘트 생성
     comments = indicator_comments(data, high_52w, vix_value, vix_prev)
 
-    # 기술 점수 계산 (기존 지표들)
+    # 기술 점수 계산
     tech_score_raw = 0
     if data["rsi"] >= 80: tech_score_raw += 10
     if data["bb_pos"] >= 80: tech_score_raw += 10
@@ -416,20 +415,19 @@ def main():
     if data["ma_deviation_pct"] >= 5: tech_score_raw += 10
     if high_52w > 0 and data["price"] >= high_52w * 0.95: tech_score_raw += 10
 
-    # 추세 점수 추가 (요청 2)
+    # 추세 점수 추가
     price_now = data["price"]
     if price_now > ma50:
         tech_score_raw += 5
     if ma200 is not None and price_now > ma200:
         tech_score_raw += 5
 
-    # tech_score를 0~40 스케일로 유지
     tech_score = tech_score_raw * 0.4
 
-    # 변동성 안정성 점수 (요청 5)
+    # 변동성 안정성 점수
     vol_stability = compute_volatility_stability(vix_value, data["atr_ratio"])
 
-    # 최종 점수 가중합 (tech 40%, proxy 30%, macro 15%, breadth 10%, vol 5%)
+    # 최종 점수 가중합
     final_score = int(
         tech_score +
         proxy_fgi * 0.3 +
@@ -438,7 +436,50 @@ def main():
         vol_stability * 0.05
     )
 
-    # 요약 문구 (요청 6)
+    # 행동 결정: 세분화되기 전 원래 로직으로 복원
+    avg_change = (sp_change + ndx_change) / 2
+
+    if final_score >= 90:
+        result = "전량 매도"
+        buy_amount = 0
+    elif final_score >= 75:
+        result = "분할 매도"
+        buy_amount = 0
+    else:
+        result = "모으기"
+        buy_amount = int(10000 + ((74 - final_score) / 74) * 20000)
+        if avg_change > 0:
+            buy_amount = 10000
+
+    # 포트폴리오 배분
+    portfolio = {
+        "SOXL": 20,
+        "TNA": 20,
+        "TECL": 10,
+        "ETHU": 10,
+        "SOLT": 10,
+        "INDL": 10,
+        "FNGU": 10,
+        "CURE": 10,
+    }
+
+    portfolio_lines = []
+    for ticker, weight in portfolio.items():
+        amount = int(buy_amount * weight / 100)
+        portfolio_lines.append(f"{ticker}: {amount:,}원")
+    portfolio_text = "\n".join(portfolio_lines)
+
+    # 52주 고점 대비
+    if high_52w > 0:
+        ratio_now = data["price"] / high_52w * 100
+        high52_line = (
+            f"- {ratio_now:.2f}% → {comments['high52_c']}\n"
+            f"- 변화: {comments['high52_change_c']}\n"
+        )
+    else:
+        high52_line = "- 데이터 없음\n"
+
+    # 요약 문구
     if final_score >= 85:
         summary = "과열 구간에 근접 → 리스크 관리 최우선"
     elif final_score >= 70:
@@ -450,9 +491,7 @@ def main():
     else:
         summary = "공포·저평가 구간 → 공격적 매수 구간 후보"
 
-    # -----------------------------
-    # 텔레그램 메시지 (요약 포함)
-    # -----------------------------
+    # 텔레그램 메시지
     telegram_message = f"""
 📊 [정수 버블 체크]
 
@@ -485,6 +524,13 @@ def main():
 - Breadth 점수: {breadth_score}/100
 - 변동성 안정성: {vol_stability}/100
 - 총 점수: {final_score}/100
+
+🧭 결론
+- 현재: {result}
+- 매수 금액: {buy_amount:,}원
+
+💼 포트폴리오 매수 금액
+{portfolio_text}
 
 📅 D-Day: 2026-06-15 (D-{dday})
 """
