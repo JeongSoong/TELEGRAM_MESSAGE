@@ -464,6 +464,10 @@ def main():
     elif final_score >= 75:
         result = "분할 매도"
         buy_amount = 0
+    elif final_score >= 50:
+        buy_amount = int(10000 + ((74 - final_score) / 74) * 20000)
+        if avg_change > 0:
+            buy_amount = 10000
     else:
         result = "모으기"
         buy_amount = int(10000 + ((74 - final_score) / 74) * 20000)
