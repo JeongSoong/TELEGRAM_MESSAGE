@@ -140,7 +140,6 @@ def format_change(curr, prev, digits=2):
     pct = delta / abs(prev) * 100
     return f"{delta:+.{digits}f} ({pct:+.{digits}f}%)"
 
-
 # -----------------------------
 # Proxy FGI 계산
 # -----------------------------
@@ -192,7 +191,7 @@ def compute_proxy_fgi():
 
         return proxy_fgi, breadth_raw
 
-    except:
+    except Exception:
         return 50, 50
 
 # -----------------------------
@@ -209,7 +208,7 @@ def get_macro_data():
         oil = float(oil_hist.mean()) if len(oil_hist) > 0 else None
 
         return fx, tnx, oil
-    except:
+    except Exception:
         return None, None, None
 
 # -----------------------------
@@ -259,6 +258,47 @@ def compute_volatility_stability(vix_value, atr_ratio):
     elif atr_ratio > 0.03:
         score -= 10
     return int(max(0, min(100, score)))
+
+# -----------------------------
+# 개별 종목 수익률 기반 배수 함수 (추가)
+# -----------------------------
+def get_ticker_returns(tickers):
+    """
+    Returns dict: {ticker: pct_change_today}
+    Uses last two closes from yfinance history(period='2d').
+    If data missing, returns 0.0 for that ticker.
+    """
+    returns = {}
+    for t in tickers:
+        try:
+            hist = yf.Ticker(t).history(period="2d")["Close"]
+            if len(hist) >= 2:
+                today = float(hist.iloc[-1])
+                prev = float(hist.iloc[-2])
+                pct = (today - prev) / prev * 100 if prev != 0 else 0.0
+                returns[t] = pct
+            else:
+                returns[t] = 0.0
+        except Exception:
+            returns[t] = 0.0
+    return returns
+
+def allocation_multiplier_from_return(pct):
+    """
+    Map today's pct change to a multiplier.
+    Tweak thresholds/multipliers as desired.
+    """
+    if pct <= -3.0:
+        return 1.30
+    if pct <= -1.0:
+        return 1.20
+    if pct < 0.0:
+        return 1.10
+    if pct < 2.0:
+        return 1.00
+    if pct < 5.0:
+        return 0.80
+    return 0.50
 
 # -----------------------------
 # 시장 데이터 수집 (변동률: 전일 종가 대비 오늘 종가)
@@ -363,7 +403,6 @@ def indicator_comments(data, high_52w, vix_value, vix_prev):
 
     return comments
 
-
 # -----------------------------
 # 메인 실행 (요청한 1~6번 반영, final_score 추천 구조 적용)
 # -----------------------------
@@ -429,7 +468,7 @@ def main():
         tech_score_raw += 5
 
     # tech_score를 0~40 스케일로 유지
-    tech_score_raw = min(100, max(0, tech_score_raw)) 
+    tech_score_raw = min(100, max(0, tech_score_raw))
     tech_score = tech_score_raw * 0.4
 
     # 변동성 안정성 점수 (VIX + ATR)
@@ -465,16 +504,15 @@ def main():
     elif final_score >= 75:
         result = "분할 매도"
         buy_amount = 0
-    elif final_score >= 50:
+    else:
         result = "모으기"
         buy_amount = int(10000 + ((74 - final_score) / 74) * 20000)
         if avg_change > 0:
             buy_amount = 10000
-    else:
-        result = "모으기"
-        buy_amount = int(10000 + ((74 - final_score) / 74) * 20000)
 
-    # 포트폴리오 배분
+    # -----------------------------
+    # 포트폴리오 배분 (개별 종목 당일 수익률 반영)
+    # -----------------------------
     portfolio = {
         "SOXL": 20,
         "TNA": 20,
@@ -486,10 +524,30 @@ def main():
         "CURE": 10,
     }
 
+    # 1) 각 티커의 오늘 수익률 조회
+    tickers = list(portfolio.keys())
+    ticker_returns = get_ticker_returns(tickers)
+
+    # 2) 기본 배분(원래 weight 기반) -> 조정 배수 적용
+    base_amounts = {t: buy_amount * w / 100 for t, w in portfolio.items()}
+    adjusted_amounts = {}
+    for t, base in base_amounts.items():
+        pct = ticker_returns.get(t, 0.0)
+        mult = allocation_multiplier_from_return(pct)
+        adjusted_amounts[t] = base * mult
+
+    # 3) 정규화: 조정된 합이 buy_amount가 되도록 스케일
+    total_adjusted = sum(adjusted_amounts.values()) if adjusted_amounts else 0
+    if total_adjusted > 0 and buy_amount > 0:
+        scale = buy_amount / total_adjusted
+    else:
+        scale = 1.0
+
     portfolio_lines = []
-    for ticker, weight in portfolio.items():
-        amount = int(buy_amount * weight / 100)
-        portfolio_lines.append(f"{ticker}: {amount:,}원")
+    for t, adj in adjusted_amounts.items():
+        final_amt = int(adj * scale)
+        portfolio_lines.append(f"{t}: {final_amt:,}원  (today {ticker_returns.get(t,0.0):+.2f}%, mult {allocation_multiplier_from_return(ticker_returns.get(t,0.0))})")
+
     portfolio_text = "\n".join(portfolio_lines)
 
     # 52주 고점 대비
