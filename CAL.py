@@ -1,3 +1,4 @@
+import os
 import requests
 import yfinance as yf
 import pandas as pd
@@ -8,6 +9,7 @@ import time
 # 설정
 # -----------------------------
 DEBUG = False
+FINNHUB_KEY = os.environ.get("FINNHUB_KEY")  # Railway 환경변수로 설정하세요
 
 # -----------------------------
 # 1. 텔레그램 전송
@@ -48,7 +50,7 @@ def compute_indicators(df: pd.DataFrame):
     rsi_latest = float(rsi.iloc[-1])
     rsi_prev = float(rsi.iloc[-2])
 
-    # MACD
+    # MACD(12,26,9)
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
@@ -174,69 +176,136 @@ def compute_proxy_fgi(indicators, vix_value):
     return max(0, min(100, final_proxy))
 
 def compute_proxy_breadth(sp_change):
-    """
-    Breadth 데이터 수집 실패 시, S&P500 등락률로 추정
-    """
-    if sp_change >= 1.0: return 80  # 강한 상승장 -> Breadth 좋음
-    if sp_change >= 0.3: return 65  # 상승장 -> Breadth 양호
-    if sp_change > -0.3: return 50  # 보합 -> 중립
-    if sp_change > -1.0: return 35  # 하락 -> Breadth 나쁨
-    return 20                       # 강한 하락 -> Breadth 매우 나쁨
+    if sp_change >= 1.0: return 80
+    if sp_change >= 0.3: return 65
+    if sp_change > -0.3: return 50
+    if sp_change > -1.0: return 35
+    return 20
 
 # -----------------------------
-# 5. FGI + Breadth 데이터 통합 수집
+# 5. Finnhub 폴백 포함: FGI + Breadth 데이터 통합 수집
 # -----------------------------
 def get_fgi_and_breadth(indicators, vix_value, sp_change):
+    """
+    순서:
+    1) CNN FGI 시도
+    2) 실패 시 Proxy FGI 계산
+    3) Breadth: yfinance (^ADVN/^DECL) 시도
+    4) 실패 시 Finnhub 폴백 시도 (환경변수 FINNHUB_KEY 필요)
+    5) 모두 실패하면 sp_change 기반 추정(Proxy breadth)
+    """
     fgi_value = 50
     is_proxy_fgi = False
 
-    # 1) CNN FGI
+    # 1) CNN FGI 시도
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         url = "https://production.dataviz.cnn.io/index/fearandgreed/static/history"
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(url, headers=headers, timeout=6)
         if res.status_code == 200:
             data = res.json()
-            fgi_value = int(data['market_rating_indicator']['rating_value'])
+            if isinstance(data, dict) and 'market_rating_indicator' in data and isinstance(data['market_rating_indicator'], dict) and 'rating_value' in data['market_rating_indicator']:
+                fgi_value = int(data['market_rating_indicator']['rating_value'])
+                is_proxy_fgi = False
+                if DEBUG: print(f"CNN FGI 성공: {fgi_value}")
+            else:
+                raise ValueError("CNN JSON 구조 불일치")
         else:
-            raise Exception("CNN Status Error")
-    except Exception:
+            raise ConnectionError(f"CNN Status {res.status_code}")
+    except Exception as e:
+        if DEBUG: print(f"CNN FGI 실패 ({e}) -> Proxy 계산")
         fgi_value = compute_proxy_fgi(indicators, vix_value)
         is_proxy_fgi = True
 
-    # 2) Breadth (티커 수정 및 예외처리 강화)
+    # 2) Breadth 시도: yfinance 우선
     breadth_raw = 50
     is_proxy_breadth = False
-    
-    # yfinance 에러 로그 억제를 위한 try-except
     try:
-        # ^ADVN 대신 ^NYADVN 사용 (NYSE Advanced)
-        adv_ticker = yf.Ticker("^NYADVN")
-        dec_ticker = yf.Ticker("^NYDECL")
-        
-        # history 호출 시 auto_adjust=False 등의 옵션은 상황 따라 다르지만 기본 호출
-        adv_hist = adv_ticker.history(period="1d")
-        dec_hist = dec_ticker.history(period="1d")
-        
+        adv_hist = yf.Ticker("^ADVN").history(period="1d")["Close"]
+        dec_hist = yf.Ticker("^DECL").history(period="1d")["Close"]
         if not adv_hist.empty and not dec_hist.empty:
-            adv = float(adv_hist["Close"].iloc[-1])
-            dec = float(dec_hist["Close"].iloc[-1])
+            adv = float(adv_hist.iloc[-1])
+            dec = float(dec_hist.iloc[-1])
             if adv + dec > 0:
                 breadth_raw = int((adv / (adv + dec)) * 100)
+                is_proxy_breadth = False
             else:
-                raise ValueError("Volume Zero")
+                raise ValueError("adv+dec == 0")
         else:
-            raise ValueError("Empty Data")
-            
-    except Exception:
-        # 실패 시 S&P500 등락률 기반 추정
-        breadth_raw = compute_proxy_breadth(sp_change)
-        is_proxy_breadth = True
+            raise ValueError("Empty adv/dec data")
+    except Exception as e_yf:
+        if DEBUG: print(f"yfinance breadth 실패: {e_yf}")
+        # 3) Finnhub 폴백 시도 (여러 엔드포인트 후보를 시도)
+        if FINNHUB_KEY:
+            try:
+                # Finnhub: 여러 엔드포인트 후보를 시도해보고, 성공하면 adv/dec 값을 해석
+                fh_endpoints = [
+                    f"https://finnhub.io/api/v1/market/adv?token={FINNHUB_KEY}",
+                    f"https://finnhub.io/api/v1/stock/market/adv?token={FINNHUB_KEY}",
+                    f"https://finnhub.io/api/v1/market/advdec?token={FINNHUB_KEY}",
+                ]
+                fh_success = False
+                for ep in fh_endpoints:
+                    try:
+                        r = requests.get(ep, timeout=6)
+                        if r.status_code != 200:
+                            if DEBUG: print(f"Finnhub endpoint {ep} status {r.status_code}")
+                            continue
+                        j = r.json()
+                        # 다양한 응답 구조에 대응
+                        # 케이스 A: {'adv': 123, 'dec': 456}
+                        if isinstance(j, dict):
+                            if 'adv' in j and 'dec' in j:
+                                adv = float(j.get('adv', 0))
+                                dec = float(j.get('dec', 0))
+                                if adv + dec > 0:
+                                    breadth_raw = int((adv / (adv + dec)) * 100)
+                                    is_proxy_breadth = False
+                                    fh_success = True
+                                    break
+                            # 케이스 B: {'advances': n, 'declines': m}
+                            if 'advances' in j and 'declines' in j:
+                                adv = float(j.get('advances', 0))
+                                dec = float(j.get('declines', 0))
+                                if adv + dec > 0:
+                                    breadth_raw = int((adv / (adv + dec)) * 100)
+                                    is_proxy_breadth = False
+                                    fh_success = True
+                                    break
+                            # 케이스 C: {'data': {'adv': n, 'dec': m}} 등
+                            if 'data' in j and isinstance(j['data'], dict):
+                                d = j['data']
+                                if 'adv' in d and 'dec' in d:
+                                    adv = float(d.get('adv', 0))
+                                    dec = float(d.get('dec', 0))
+                                    if adv + dec > 0:
+                                        breadth_raw = int((adv / (adv + dec)) * 100)
+                                        is_proxy_breadth = False
+                                        fh_success = True
+                                        break
+                        # 기타: 응답이 리스트 등인 경우는 무시
+                    except Exception as e_ep:
+                        if DEBUG: print(f"Finnhub endpoint {ep} 예외: {e_ep}")
+                        continue
+                if not fh_success:
+                    # Finnhub로도 못 구하면 proxy로 fallback
+                    if DEBUG: print("Finnhub로 breadth 획득 실패")
+                    breadth_raw = compute_proxy_breadth(sp_change)
+                    is_proxy_breadth = True
+            except Exception as e_fh:
+                if DEBUG: print(f"Finnhub 호출 실패: {e_fh}")
+                breadth_raw = compute_proxy_breadth(sp_change)
+                is_proxy_breadth = True
+        else:
+            # FINNHUB_KEY 없으면 바로 proxy
+            if DEBUG: print("FINNHUB_KEY 미설정, breadth proxy 사용")
+            breadth_raw = compute_proxy_breadth(sp_change)
+            is_proxy_breadth = True
 
     return fgi_value, breadth_raw, is_proxy_fgi, is_proxy_breadth
 
 # -----------------------------
-# 6. 매크로 데이터
+# 6. 매크로 데이터 (환율/금리/유가)
 # -----------------------------
 def get_macro_data():
     try:
@@ -253,23 +322,31 @@ def get_macro_data():
         return None, None, None
 
 def compute_macro_score(fx_now, tnx_now, oil_now):
-    macro_score = 50
-    if fx_now:
+    macro_score = 50  # 기본값
+
+    # 1. 환율 (FX)
+    if fx_now is not None:
         if fx_now < 1320: macro_score += 20
         elif fx_now < 1380: macro_score += 10
+        elif fx_now < 1420: macro_score += 0
         elif fx_now < 1460: macro_score -= 10
         elif fx_now < 1500: macro_score -= 20
         else: macro_score -= 30
 
-    if tnx_now:
+    # 2. 금리 (TNX)
+    if tnx_now is not None:
         if tnx_now < 3.5: macro_score += 20
         elif tnx_now < 4.0: macro_score += 10
+        elif tnx_now < 4.3: macro_score += 0
         elif tnx_now < 4.6: macro_score -= 15
         elif tnx_now < 4.9: macro_score -= 25
         else: macro_score -= 35
 
-    if oil_now:
-        if oil_now < 65: macro_score += 15
+    # 3. 유가 (WTI)
+    if oil_now is not None:
+        if oil_now < 55: macro_score += 25
+        elif oil_now < 65: macro_score += 15
+        elif oil_now < 75: macro_score += 0
         elif oil_now < 85: macro_score -= 10
         elif oil_now < 95: macro_score -= 20
         else: macro_score -= 35
@@ -277,10 +354,11 @@ def compute_macro_score(fx_now, tnx_now, oil_now):
     return max(0, min(100, macro_score))
 
 # -----------------------------
-# 7. 변동성 안정성
+# 7. 변동성 안정성 점수
 # -----------------------------
 def compute_volatility_stability(vix_value, atr_ratio):
-    if vix_value is None or atr_ratio is None: return 50
+    if vix_value is None or atr_ratio is None:
+        return 50
     score = 50
     if vix_value < 13: score += 30
     elif vix_value < 17: score += 10
@@ -288,10 +366,11 @@ def compute_volatility_stability(vix_value, atr_ratio):
 
     if atr_ratio < 0.01: score += 10
     elif atr_ratio > 0.03: score -= 10
+
     return int(max(0, min(100, score)))
 
 # -----------------------------
-# 8. 포트폴리오 및 통합 데이터
+# 8. 포트폴리오 수익률 및 데이터 수집
 # -----------------------------
 def get_ticker_returns(tickers):
     returns = {}
@@ -305,7 +384,7 @@ def get_ticker_returns(tickers):
                 returns[t] = pct
             else:
                 returns[t] = 0.0
-        except:
+        except Exception:
             returns[t] = 0.0
     return returns
 
@@ -323,6 +402,7 @@ def fetch_market_data():
     ndx_all = yf.Ticker("^NDX").history(period="252d")
     vix_hist = yf.Ticker("^VIX").history(period="2d")
 
+    # 변동률
     sp_yesterday = sp_all.iloc[-2]
     sp_today = sp_all.iloc[-1]
     sp_change = float((sp_today["Close"] - sp_yesterday["Close"]) / sp_yesterday["Close"] * 100)
@@ -335,13 +415,16 @@ def fetch_market_data():
     vix_value = float(vix_close.iloc[-1])
     vix_prev = float(vix_close.iloc[-2]) if len(vix_close) >= 2 else vix_value
 
+    # 지표 계산
     indicators = compute_indicators(sp_hist[["Open", "High", "Low", "Close"]])
 
-    # 여기서 sp_change를 넘겨주어, Breadth 실패 시 sp_change로 추정하게 함
+    # CNN FGI + Breadth (Finnhub 폴백 포함)
     fgi_val, breadth_val, is_proxy_fgi, is_proxy_breadth = get_fgi_and_breadth(indicators, vix_value, sp_change)
 
+    # 매크로
     fx_now, tnx_now, oil_now = get_macro_data()
 
+    # 52주 고점 등
     high_52w = float(sp_all["High"].max()) if len(sp_all) > 0 else 0
     ma50 = float(sp_all["Close"].rolling(50).mean().iloc[-1])
     ma200 = float(sp_all["Close"].rolling(200).mean().iloc[-1]) if len(sp_all) >= 200 else None
@@ -365,70 +448,93 @@ def fetch_market_data():
     }
 
 # -----------------------------
-# 9. 상세 코멘트
+# 9. 상세 코멘트 생성
 # -----------------------------
 def indicator_comments(data, high_52w, vix_value, vix_prev):
     comments = {}
-    comments["vix_c"] = "안정" if vix_value <= 15 else "경계" if vix_value <= 20 else "공포"
+
+    comments["vix_c"] = (
+        "극저변동성" if vix_value <= 12 else
+        "낮은 변동성" if vix_value <= 15 else
+        "정상 변동성" if vix_value <= 20 else
+        "변동성 증가" if vix_value <= 25 else
+        "공포 구간"
+    )
     comments["vix_change_c"] = format_change(vix_value, vix_prev)
-    comments["macd_level_c"] = "상승추세" if data["macd"] > 0 else "하락추세"
-    comments["macd_signal_c"] = "상승모멘텀" if data["macd"] > data["macd_signal"] else "하락모멘텀"
-    comments["macd_hist_c"] = "강함" if abs(data["macd_hist"]) >= 5 else "약함"
-    comments["macd_change_c"] = format_change(data["macd"], data["macd_prev"], 4)
-    comments["macd_signal_change_c"] = format_change(data["macd_signal"], data["macd_signal_prev"], 4)
-    comments["macd_hist_change_c"] = format_change(data["macd_hist"], data["macd_hist_prev"], 4)
-    comments["rsi_c"] = "과열" if data["rsi"] >= 70 else "침체" if data["rsi"] <= 30 else "중립"
-    comments["rsi_change_c"] = format_change(data["rsi"], data["rsi_prev"])
-    comments["bb_c"] = "상단터치" if data["bb_pos"] >= 100 else "하단터치" if data["bb_pos"] <= 0 else "내부"
-    comments["bb_change_c"] = format_change(data["bb_pos"], data["bb_pos_prev"])
-    comments["stoch_c"] = "과열" if data["stoch_k"] >= 80 else "침체" if data["stoch_k"] <= 20 else "중립"
-    comments["stoch_k_change_c"] = format_change(data["stoch_k"], data["stoch_k_prev"])
-    comments["stoch_d_change_c"] = format_change(data["stoch_d"], data["stoch_d_prev"])
-    comments["cci_c"] = "과열" if data["cci"] >= 100 else "침체" if data["cci"] <= -100 else "중립"
-    comments["cci_change_c"] = format_change(data["cci"], data["cci_prev"])
-    comments["wr_c"] = "과열" if data["williams_r"] >= -20 else "침체" if data["williams_r"] <= -80 else "중립"
-    comments["wr_change_c"] = format_change(data["williams_r"], data["williams_r_prev"])
-    comments["atr_c"] = "변동성낮음" if data["atr_ratio"] <= 0.015 else "변동성높음"
-    comments["atr_change_c"] = format_change(data["atr_ratio"], data["atr_ratio_prev"], 4)
-    comments["ma_c"] = "과이격" if abs(data["ma_deviation_pct"]) >= 5 else "정상"
-    comments["ma_change_c"] = format_change(data["ma_deviation_pct"], data["ma_deviation_pct_prev"])
+
+    comments["macd_level_c"] = "상승 추세" if data.get("macd", 0) > 0 else "하락 추세"
+    comments["macd_signal_c"] = "상승 모멘텀" if data.get("macd", 0) > data.get("macd_signal", 0) else "하락 모멘텀"
+    comments["macd_hist_c"] = "모멘텀 강함" if abs(data.get("macd_hist", 0)) >= 5 else "모멘텀 약함"
+    comments["macd_change_c"] = format_change(data.get("macd", 0), data.get("macd_prev", 0), 4)
+    comments["macd_signal_change_c"] = format_change(data.get("macd_signal", 0), data.get("macd_signal_prev", 0), 4)
+    comments["macd_hist_change_c"] = format_change(data.get("macd_hist", 0), data.get("macd_hist_prev", 0), 4)
+
+    comments["rsi_c"] = "과열" if data.get("rsi", 50) >= 70 else "중립"
+    comments["rsi_change_c"] = format_change(data.get("rsi", 50), data.get("rsi_prev", 50))
+
+    comments["bb_c"] = "과열" if data.get("bb_pos", 50) >= 80 else "중립"
+    comments["bb_change_c"] = format_change(data.get("bb_pos", 50), data.get("bb_pos_prev", 50))
+
+    comments["stoch_c"] = "과열" if data.get("stoch_k", 50) >= 80 else "중립"
+    comments["stoch_k_change_c"] = format_change(data.get("stoch_k", 50), data.get("stoch_k_prev", 50))
+    comments["stoch_d_change_c"] = format_change(data.get("stoch_d", 50), data.get("stoch_d_prev", 50))
+
+    comments["cci_c"] = "과열" if data.get("cci", 0) >= 100 else "중립"
+    comments["cci_change_c"] = format_change(data.get("cci", 0), data.get("cci_prev", 0))
+
+    comments["wr_c"] = "극과열" if data.get("williams_r", 0) >= -10 else "중립"
+    comments["wr_change_c"] = format_change(data.get("williams_r", 0), data.get("williams_r_prev", 0))
+
+    comments["atr_c"] = "변동성 낮음" if data.get("atr_ratio", 0) <= 0.015 else "변동성 높음"
+    comments["atr_change_c"] = format_change(data.get("atr_ratio", 0), data.get("atr_ratio_prev", 0), 4)
+
+    comments["ma_c"] = "과열" if data.get("ma_deviation_pct", 0) >= 5 else "중립"
+    comments["ma_change_c"] = format_change(data.get("ma_deviation_pct", 0), data.get("ma_deviation_pct_prev", 0))
 
     if high_52w > 0:
-        ratio = data["price"] / high_52w * 100
-        ratio_prev = data["price_prev"] / high_52w * 100
-        comments["high52_c"] = "고점근접" if ratio >= 98 else "중립"
+        ratio = data.get("price", 0) / high_52w * 100
+        ratio_prev = data.get("price_prev", 0) / high_52w * 100
+        comments["high52_c"] = "고점 근접" if ratio >= 98 else "중립"
         comments["high52_change_c"] = format_change(ratio, ratio_prev)
     else:
-        comments["high52_c"] = "N/A"
-        comments["high52_change_c"] = "-"
+        comments["high52_c"] = "데이터 없음"
+        comments["high52_change_c"] = "변화 없음"
+
     return comments
 
 # -----------------------------
-# 10. 메인
+# 10. 메인 실행
 # -----------------------------
 def main():
     print("데이터 수집 시작...")
     try:
         data = fetch_market_data()
     except Exception as e:
-        print(f"데이터 수집 중 오류: {e}")
+        print(f"데이터 수집 중 치명적 오류: {e}")
         send_telegram(f"❌ 봇 실행 실패: {e}")
         return
 
     dday = get_dday()
 
-    sp_change = data["sp_change"]
-    ndx_change = data["ndx_change"]
-    vix_value = data["vix_value"]
-    
-    fgi_val = data["real_fgi"]
-    breadth_raw = data["breadth_score"]
-    
-    # Proxy Status
-    is_proxy_fgi = data["is_proxy_fgi"]
-    is_proxy_breadth = data["is_proxy_breadth"]
+    sp_change = data.get("sp_change", 0)
+    ndx_change = data.get("ndx_change", 0)
+    vix_value = data.get("vix_value", 0)
+    vix_prev = data.get("vix_prev", 0)
+    high_52w = data.get("high_52w", 0)
+    ma50 = data.get("ma50", 0)
+    ma200 = data.get("ma200", None)
 
-    macro_score = compute_macro_score(data["fx_now"], data["tnx_now"], data["oil_now"])
+    fgi_val = data.get("real_fgi", 50)
+    breadth_raw = data.get("breadth_score", 50)
+    
+    is_proxy_fgi = data.get("is_proxy_fgi", False)
+    is_proxy_breadth = data.get("is_proxy_breadth", False)
+
+    fx_now = data.get("fx_now", None)
+    tnx_now = data.get("tnx_now", None)
+    oil_now = data.get("oil_now", None)
+
+    macro_score = compute_macro_score(fx_now, tnx_now, oil_now)
 
     if breadth_raw >= 70:
         breadth_score = 95
@@ -446,28 +552,27 @@ def main():
         breadth_score = 10
         breadth_label = "위험"
 
-    comments = indicator_comments(data, data["high_52w"], vix_value, data["vix_prev"])
+    comments = indicator_comments(data, high_52w, vix_value, vix_prev)
 
-    # Tech Score
     tech_score_raw = 0
-    if data["rsi"] >= 80: tech_score_raw += 10
-    if data["bb_pos"] >= 80: tech_score_raw += 10
-    if data["macd"] > data["macd_signal"]: tech_score_raw += 10
+    if data.get("rsi",0) >= 80: tech_score_raw += 10
+    if data.get("bb_pos",0) >= 80: tech_score_raw += 10
+    if data.get("macd",0) > data.get("macd_signal",0): tech_score_raw += 10
     if vix_value <= 15: tech_score_raw += 10
-    if data["stoch_k"] >= 80 and data["stoch_d"] >= 80: tech_score_raw += 10
-    if data["cci"] >= 100: tech_score_raw += 10
-    if data["williams_r"] >= -20: tech_score_raw += 10
-    if data["atr_ratio"] <= 0.015: tech_score_raw += 10
-    if data["ma_deviation_pct"] >= 5: tech_score_raw += 10
-    if data["high_52w"] > 0 and data["price"] >= data["high_52w"] * 0.95: tech_score_raw += 10
+    if data.get("stoch_k",0) >= 80 and data.get("stoch_d",0) >= 80: tech_score_raw += 10
+    if data.get("cci",0) >= 100: tech_score_raw += 10
+    if data.get("williams_r",0) >= -20: tech_score_raw += 10
+    if data.get("atr_ratio",0) <= 0.015: tech_score_raw += 10
+    if data.get("ma_deviation_pct",0) >= 5: tech_score_raw += 10
+    if high_52w > 0 and data.get("price",0) >= high_52w * 0.95: tech_score_raw += 10
 
-    if data["price"] > data["ma50"]: tech_score_raw += 5
-    if data["ma200"] and data["price"] > data["ma200"]: tech_score_raw += 5
+    if data.get("price",0) > ma50: tech_score_raw += 5
+    if ma200 is not None and data.get("price",0) > ma200: tech_score_raw += 5
 
     tech_score_raw = min(100, max(0, tech_score_raw))
     tech_score = tech_score_raw * 0.4
 
-    vol_stability = compute_volatility_stability(vix_value, data["atr_ratio"])
+    vol_stability = compute_volatility_stability(vix_value, data.get("atr_ratio",0))
 
     final_score = int(
         tech_score +
@@ -477,11 +582,16 @@ def main():
         (vol_stability * 0.05)
     )
 
-    if final_score >= 85: summary = "과열 경고 → 리스크 관리"
-    elif final_score >= 70: summary = "과열 구간 → 비중 축소 고려"
-    elif final_score >= 55: summary = "중립/상승 → 관망"
-    elif final_score >= 40: summary = "중립/저평가 → 분할 매수"
-    else: summary = "공포/기회 → 적극 매수 고려"
+    if final_score >= 85:
+        summary = "과열 구간에 근접 → 리스크 관리 최우선"
+    elif final_score >= 70:
+        summary = "상당한 과열 신호 → 매도/비중축소 고려"
+    elif final_score >= 55:
+        summary = "중립~살짝 과열 → 관망 또는 소량 조절"
+    elif final_score >= 40:
+        summary = "중립~저평가 구간 → 분할 매수 고려"
+    else:
+        summary = "공포·저평가 구간 → 공격적 매수 구간 후보"
 
     avg_change = (sp_change + ndx_change) / 2
     if final_score >= 90:
@@ -493,64 +603,132 @@ def main():
     elif final_score >= 50:
         result = "모으기"
         buy_amount = int(10000 + ((74 - final_score) / 74) * 20000)
-        if avg_change > 0: buy_amount = 10000
+        if avg_change > 0:
+            buy_amount = 10000
     else:
         result = "모으기 (적극)"
         buy_amount = max(0, int(10000 + ((49 - final_score) / 74) * 25000))
 
-    # Alert Check
-    alerts = []
-    if is_proxy_fgi: alerts.append("⚠️ FGI: API실패→자체계산")
-    if is_proxy_breadth: alerts.append("⚠️ Breadth: 데이터없음→지수기반추정")
-    alert_txt = "\n".join(alerts) + "\n" if alerts else ""
+    alert_lines = []
+    if is_proxy_fgi:
+        alert_lines.append("⚠️ CNN 데이터 수집 실패 → 자체 계산(Proxy) 지표 사용")
+    if is_proxy_breadth:
+        alert_lines.append("⚠️ Breadth 데이터 부족 → 기본값/추정값 사용")
+    alert_msg = "\n".join(alert_lines) + "\n\n" if alert_lines else ""
 
-    # Portfolio
-    portfolio = {"SOXL": 20, "TNA": 20, "TECL": 10, "ETHU": 10, "SOLT": 10, "INDL": 10, "FNGU": 10, "CURE": 10}
-    tkr_rets = get_ticker_returns(portfolio.keys())
-    
-    base_amts = {t: buy_amount * w / 100 for t, w in portfolio.items()}
-    adj_amts = {t: base_amts[t] * allocation_multiplier_from_return(tkr_rets.get(t,0)) for t in portfolio}
-    
-    total_adj = sum(adj_amts.values())
-    scale = buy_amount / total_adj if total_adj > 0 and buy_amount > 0 else 0
-    
-    port_lines = []
-    for t, amt in adj_amts.items():
-        final = int(amt * scale)
-        pct = tkr_rets.get(t, 0)
-        port_lines.append(f"{t}: {final:,}원 ({pct:+.2f}%)")
-    port_text = "\n".join(port_lines)
+    portfolio = {
+        "SOXL": 20, "TNA": 20, "TECL": 10, "ETHU": 10,
+        "SOLT": 10, "INDL": 10, "FNGU": 10, "CURE": 10,
+    }
+    tickers = list(portfolio.keys())
+    ticker_returns = get_ticker_returns(tickers)
 
-    fgi_name = "Proxy FGI" if is_proxy_fgi else "CNN FGI"
+    base_amounts = {t: buy_amount * w / 100 for t, w in portfolio.items()}
+    adjusted_amounts = {}
+    for t, base in base_amounts.items():
+        pct = ticker_returns.get(t, 0.0)
+        mult = allocation_multiplier_from_return(pct)
+        adjusted_amounts[t] = base * mult
 
-    msg = f"""{alert_txt}📊 [정수 버블 체크]
+    total_adjusted = sum(adjusted_amounts.values()) if adjusted_amounts else 0
+    scale = buy_amount / total_adjusted if (total_adjusted > 0 and buy_amount > 0) else 0.0
 
-📌 {summary}
-(총점: {final_score}점 / {result})
+    portfolio_lines = []
+    for t, adj in adjusted_amounts.items():
+        final_amt = int(adj * scale)
+        pct = ticker_returns.get(t, 0.0)
+        mult = allocation_multiplier_from_return(pct)
+        portfolio_lines.append(f"{t}: {final_amt:,}원 (today {pct:+.2f}%, mult {mult})")
+    portfolio_text = "\n".join(portfolio_lines)
 
-📈 시장 현황
-S&P500 {sp_change:+.2f}% | NDX {ndx_change:+.2f}%
-VIX {vix_value:.2f} ({comments['vix_c']})
+    # 안전한 표시값
+    bb_pos_display = f"{data.get('bb_pos', 50):.1f}"
+    bb_upper = data.get('bb_upper', 0)
+    bb_lower = data.get('bb_lower', 0)
 
-🧮 세부 점수
-- 기술적(40%): {tech_score_raw}
-- {fgi_name}(30%): {fgi_val}
-- 매크로(15%): {macro_score}
-- Breadth(10%): {breadth_score} ({breadth_label})
-- 안정성(5%): {vol_stability}
+    fgi_display_name = "Proxy FGI (추정)" if is_proxy_fgi else "Real CNN FGI"
 
-🔍 주요 지표 변화
-RSI: {data['rsi']:.1f} ({comments['rsi_change_c']})
-MACD: {comments['macd_level_c']} ({comments['macd_change_c']})
-BB: {comments['bb_pos']:.0f}% ({comments['bb_change_c']})
+    telegram_message = f"""{alert_msg}📊 [정수 버블 체크 - {fgi_display_name}]
 
-💰 매수 가이드: {buy_amount:,}원
-{port_text}
+📌 요약
+- {summary}
 
-📅 D-Day: 2026-06-15 (D-{dday})"""
+📈 지수 변동 (전일 종가 대비)
+- S&P500: {sp_change:.2f}%
+- NASDAQ: {ndx_change:.2f}%
+- VIX: {vix_value:.2f}
+  → {comments.get('vix_c', '-') if (comments := indicator_comments(data, high_52w, vix_value, vix_prev)) else '-' }
+  → 전일 대비 {comments.get('vix_change_c','-')}
 
-    send_telegram(msg)
+🔍 기술적 지표 요약
+
+🔸 MACD
+- MACD / Signal / Hist: {data.get('macd',0):.4f} / {data.get('macd_signal',0):.4f} / {data.get('macd_hist',0):.4f}
+- 해석: {comments.get('macd_level_c','-')} / {comments.get('macd_signal_c','-')} / {comments.get('macd_hist_c','-')}
+- 변화:
+  • MACD {comments.get('macd_change_c','-')}
+  • Signal {comments.get('macd_signal_change_c','-')}
+  • Hist {comments.get('macd_hist_change_c','-')}
+
+🔸 RSI(14)
+- {data.get('rsi',0):.2f} → {comments.get('rsi_c','-')}
+- 변화: {comments.get('rsi_change_c','-')}
+
+🔸 Bollinger Band
+- 위치: {bb_pos_display}% (상단 {bb_upper:.2f}, 하단 {bb_lower:.2f})
+- 해석: {comments.get('bb_c','-')}
+- 변화: {comments.get('bb_change_c','-')}
+
+🔸 Stochastic Slow
+- %K / %D: {data.get('stoch_k',0):.2f} / {data.get('stoch_d',0):.2f}
+- 해석: {comments.get('stoch_c','-')}
+- 변화:
+  • K {comments.get('stoch_k_change_c','-')}
+  • D {comments.get('stoch_d_change_c','-')}
+
+🔸 CCI(20)
+- {data.get('cci',0):.2f} → {comments.get('cci_c','-')}
+- 변화: {comments.get('cci_change_c','-')}
+
+🔸 Williams %R
+- {data.get('williams_r',0):.2f} → {comments.get('wr_c','-')}
+- 변화: {comments.get('wr_change_c','-')}
+
+🔸 ATR 비율
+- {data.get('atr_ratio',0)*100:.2f}% → {comments.get('atr_c','-')}
+- 변화: {comments.get('atr_change_c','-')}
+
+🔸 20MA 괴리율
+- {data.get('ma_deviation_pct',0):.2f}% → {comments.get('ma_c','-')}
+- 변화: {comments.get('ma_change_c','-')}
+
+🔸 52주 고점 대비
+- { (data.get('price',0) / high_52w * 100) if high_52w>0 else 0:.2f}% → {comments.get('high52_c','-')}
+- 변화: {comments.get('high52_change_c','-')}
+
+🧮 점수 산출
+- 기술 점수(40%): {tech_score_raw}/100
+- {fgi_display_name}(30%): {fgi_val}/100 🔥
+- 매크로 점수(15%): {macro_score}/100
+- Breadth 점수(10%): {breadth_score}/100 ({breadth_label})
+- 변동성 안정성(5%): {vol_stability}/100
+- 총 점수: {final_score}/100
+
+🧭 결론
+- 75점↑ 매도 / 90점↑ 전량 매도
+- 현재: {result}
+- 매수 금액: {buy_amount:,}원
+
+💼 포트폴리오 매수 금액
+{portfolio_text}
+
+📅 D-Day: 2026-06-15 (D-{dday})
+"""
+
+    send_telegram(telegram_message)
     print("텔레그램 전송 완료")
+    if DEBUG:
+        print(f"DEBUG: Proxy={is_proxy_fgi}, FGI={fgi_val}, BreadthProxy={is_proxy_breadth}, Final={final_score}")
 
 if __name__ == "__main__":
     main()
