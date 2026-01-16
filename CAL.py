@@ -429,14 +429,15 @@ def main():
         tech_score_raw += 5
 
     # tech_score를 0~40 스케일로 유지
-    tech_score = tech_score_raw
+    tech_score_raw = min(100, max(0, tech_score_raw)) 
+    tech_score = tech_score_raw * 0.4
 
     # 변동성 안정성 점수 (VIX + ATR)
     vol_stability = compute_volatility_stability(vix_value, data["atr_ratio"])
 
     # 최종 점수 가중합 (추천 구조)
     final_score = int(
-        tech_score * 0.40+
+        tech_score +
         proxy_fgi * 0.30 +
         macro_score * 0.15 +
         breadth_score * 0.10 +
