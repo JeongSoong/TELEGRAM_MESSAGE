@@ -323,7 +323,7 @@ def indicator_comments(data, high_52w, vix_value, vix_prev):
 
     comments["macd_change_c"] = format_change(data["macd"], data["macd_prev"], 4)
     comments["macd_signal_change_c"] = format_change(data["macd_signal"], data["macd_signal_prev"], 4)
-    comments["macd_hist_change_c"] = format_change(data["macd_hist"], data["macd_hist_prev'], 4)
+    comments["macd_hist_change_c"] = format_change(data["macd_hist"], data["macd_hist_prev"], 4)
 
     comments["rsi_c"] = "과열" if data["rsi"] >= 70 else "중립"
     comments["rsi_change_c"] = format_change(data["rsi"], data["rsi_prev"])
