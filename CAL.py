@@ -436,7 +436,7 @@ def main():
 
     # 최종 점수 가중합 (추천 구조)
     final_score = int(
-        tech_score * 0.4+
+        tech_score * 0.40+
         proxy_fgi * 0.30 +
         macro_score * 0.15 +
         breadth_score * 0.10 +
