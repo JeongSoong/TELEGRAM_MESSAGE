@@ -179,11 +179,10 @@ def save_cached_fgi(fgi):
 # -----------------------------
 def get_real_cnn_fgi_and_breadth():
     """
-    CNN FGI를 가져오되 실패하면 10분마다 재시도, 최대 10회.
-    성공하면 캐시에 저장하고 즉시 반환.
-    Breadth는 매 호출마다 실시간으로 계산(캐시 미적용).
+    CNN FGI를 시도하되, 실패하면 캐시에 저장된 마지막 값을 사용.
+    반환: (fgi_value:int, breadth_raw:int)
     """
-    # 1) 캐시 먼저 확인 (기존 로직 유지)
+    # 1) 캐시 확인(마지막 값 우선)
     cached = load_cached_fgi()
     if cached is not None:
         if DEBUG:
@@ -191,52 +190,35 @@ def get_real_cnn_fgi_and_breadth():
         fgi_value = cached
     else:
         fgi_value = 50  # 기본값
-        url = "https://production.dataviz.cnn.io/index/fearandgreed/static/history"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        max_attempts = 10
-        attempt = 0
-        wait_seconds = 600  # 10분
 
-        while attempt < max_attempts:
-            attempt += 1
+    # 2) CNN 시도 (성공하면 캐시에 저장하고 fgi_value 갱신)
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        url = "https://production.dataviz.cnn.io/index/fearandgreed/static/history"
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
             try:
-                if DEBUG:
-                    print(f"FGI 시도 {attempt}/{max_attempts} ...")
-                res = requests.get(url, headers=headers, timeout=15)
-                if res.status_code == 200:
-                    try:
-                        data = res.json()
-                        # 안전한 키 확인
-                        if isinstance(data, dict) and 'market_rating_indicator' in data and isinstance(data['market_rating_indicator'], dict) and 'rating_value' in data['market_rating_indicator']:
-                            fgi_value = int(data['market_rating_indicator']['rating_value'])
-                            save_cached_fgi(fgi_value)
-                            if DEBUG:
-                                print("CNN FGI 수집 성공:", fgi_value)
-                            break  # 성공하면 루프 종료
-                        else:
-                            if DEBUG:
-                                print("CNN FGI: 응답 구조가 예상과 다름, 폴백 또는 재시도")
-                    except Exception as e:
-                        if DEBUG:
-                            print("CNN FGI JSON 파싱 에러:", e)
+                data = res.json()
+                if isinstance(data, dict) and 'market_rating_indicator' in data and isinstance(data['market_rating_indicator'], dict) and 'rating_value' in data['market_rating_indicator']:
+                    fetched = int(data['market_rating_indicator']['rating_value'])
+                    fgi_value = fetched
+                    save_cached_fgi(fgi_value)
+                    if DEBUG:
+                        print("CNN FGI 수집 성공:", fgi_value)
                 else:
                     if DEBUG:
-                        print(f"CNN FGI 수집 실패 (Status: {res.status_code})")
+                        print("CNN FGI: 응답 구조 불일치, 캐시/기본값 사용")
             except Exception as e:
                 if DEBUG:
-                    print(f"CNN FGI 요청 에러: {e}")
+                    print("CNN FGI JSON 파싱 에러:", e)
+        else:
+            if DEBUG:
+                print(f"CNN FGI 수집 실패 (Status: {res.status_code}), 캐시/기본값 사용")
+    except Exception as e:
+        if DEBUG:
+            print("CNN FGI 요청 예외:", e)
 
-            # 실패한 경우: 최대 횟수에 도달하지 않았다면 대기 후 재시도
-            if attempt < max_attempts:
-                if DEBUG:
-                    print(f"{wait_seconds}초 대기 후 재시도...")
-                time.sleep(wait_seconds)
-            else:
-                if DEBUG:
-                    print("최대 재시도 횟수 도달, 기본값 사용")
-                # fgi_value는 기본값(50) 유지
-
-    # Breadth 안전 처리 (항상 실시간 계산)
+    # 3) Breadth 안전 처리 (항상 실시간 계산)
     breadth_raw = 50
     try:
         adv_hist = yf.Ticker("^ADVN").history(period="1d")["Close"]
@@ -250,8 +232,7 @@ def get_real_cnn_fgi_and_breadth():
             if DEBUG:
                 print("Breadth 데이터 부족, 기본값 사용")
         else:
-            breadth_ratio = adv / (adv + dec)
-            breadth_raw = int(breadth_ratio * 100)
+            breadth_raw = int((adv / (adv + dec)) * 100)
             if DEBUG:
                 print("Breadth 계산:", breadth_raw)
     except Exception as e:
@@ -260,6 +241,7 @@ def get_real_cnn_fgi_and_breadth():
         breadth_raw = 50
 
     return fgi_value, breadth_raw
+
 
 # -----------------------------
 # 6. 매크로 데이터 (환율/금리/유가)
