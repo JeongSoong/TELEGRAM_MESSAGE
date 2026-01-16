@@ -1,8 +1,6 @@
 import requests
-from bs4 import BeautifulSoup
 import yfinance as yf
 import pandas as pd
-from textblob import TextBlob
 from datetime import datetime
 
 # -----------------------------
@@ -142,20 +140,20 @@ def format_change(curr, prev, digits=2):
 
 
 # -----------------------------
-# Proxy FGI 계산
+# Proxy FGI 계산 (Breadth 분리)
 # -----------------------------
 def compute_proxy_fgi():
     try:
         vix = yf.Ticker("^VIX").history(period="10d")["Close"]
         if len(vix) < 2:
-            return 50
+            return 50, 50
         vix_now = float(vix.iloc[-1])
         vix_change = (vix_now - float(vix.iloc[0])) / float(vix.iloc[0]) * 100
         vix_score = max(0, min(100, 100 - vix_now * 3))
 
         junk = yf.Ticker("HYG").history(period="30d")["Close"]
         if len(junk) < 2:
-            return 50
+            return 50, 50
         junk_now = float(junk.iloc[-1])
         junk_change = (junk_now - float(junk.iloc[0])) / float(junk.iloc[0]) * 100
         junk_score = max(0, min(100, 50 + junk_change * 5))
@@ -163,7 +161,7 @@ def compute_proxy_fgi():
         gold_hist = yf.Ticker("GC=F").history(period="1d")["Close"]
         sp_hist = yf.Ticker("^GSPC").history(period="1d")["Close"]
         if len(gold_hist) == 0 or len(sp_hist) == 0:
-            return 50
+            return 50, 50
         gold = float(gold_hist.iloc[-1])
         sp = float(sp_hist.iloc[-1])
         safe_ratio = gold / sp if sp != 0 else 1
@@ -171,51 +169,51 @@ def compute_proxy_fgi():
 
         sp125 = yf.Ticker("^GSPC").history(period="125d")["Close"]
         if len(sp125) < 2:
-            return 50
+            return 50, 50
         momentum = (float(sp125.iloc[-1]) - float(sp125.iloc[0])) / float(sp125.iloc[0]) * 100
         momentum_score = max(0, min(100, 50 + momentum))
 
         adv_hist = yf.Ticker("^ADVN").history(period="1d")["Close"]
         dec_hist = yf.Ticker("^DECL").history(period="1d")["Close"]
         if len(adv_hist) == 0 or len(dec_hist) == 0:
-            breadth_score = 50
+            breadth_raw = 50
         else:
             adv = float(adv_hist.iloc[-1])
             dec = float(dec_hist.iloc[-1])
             breadth_ratio = adv / (adv + dec) if (adv + dec) != 0 else 0.5
-            breadth_score = int(breadth_ratio * 100)
+            breadth_raw = int(breadth_ratio * 100)
 
         vol_score = max(0, min(100, 100 - abs(vix_change) * 2))
 
         proxy_fgi = int((vix_score + junk_score + safe_score +
                          momentum_score + vol_score) / 5)
 
-        return proxy_fgi, breadth_score
+        return proxy_fgi, breadth_raw
 
     except:
-        return 50
+        return 50, 50
 
 # -----------------------------
-# 환율 / 금리 / 유가
+# 환율 / 금리 / 유가 (최근 5일 평균으로 소폭 스무딩)
 # -----------------------------
 def get_macro_data():
     try:
-        fx_hist = yf.Ticker("USDKRW=X").history(period="1d")["Close"]
-        tnx_hist = yf.Ticker("^TNX").history(period="1d")["Close"]
-        oil_hist = yf.Ticker("CL=F").history(period="1d")["Close"]
+        fx_hist = yf.Ticker("USDKRW=X").history(period="5d")["Close"]
+        tnx_hist = yf.Ticker("^TNX").history(period="5d")["Close"]
+        oil_hist = yf.Ticker("CL=F").history(period="5d")["Close"]
 
-        fx = float(fx_hist.iloc[-1]) if len(fx_hist) > 0 else None
-        tnx = float(tnx_hist.iloc[-1]) if len(tnx_hist) > 0 else None
-        oil = float(oil_hist.iloc[-1]) if len(oil_hist) > 0 else None
+        fx = float(fx_hist.mean()) if len(fx_hist) > 0 else None
+        tnx = float(tnx_hist.mean()) if len(tnx_hist) > 0 else None
+        oil = float(oil_hist.mean()) if len(oil_hist) > 0 else None
 
         return fx, tnx, oil
     except:
         return None, None, None
-        
+
 # -----------------------------
-# Macro 계산
+# Macro 계산 (환율 + 금리 + 유가 반영)
 # -----------------------------
-def compute_macro_score(fx_now, tnx_now):
+def compute_macro_score(fx_now, tnx_now, oil_now):
     macro_score = 50  # 기본값
 
     # 1. 환율
@@ -232,24 +230,52 @@ def compute_macro_score(fx_now, tnx_now):
         elif tnx_now > 4.5:
             macro_score -= 15
 
+    # 3. 유가 (WTI)
+    if oil_now is not None:
+        if oil_now > 90:
+            macro_score -= 10
+        elif oil_now < 70:
+            macro_score += 5
+
     return max(0, min(100, macro_score))
 
+# -----------------------------
+# 변동성 안정성 점수 (VIX + ATR 기반)
+# -----------------------------
+def compute_volatility_stability(vix_value, atr_ratio):
+    if vix_value is None or atr_ratio is None:
+        return 50
+    score = 50
+    if vix_value < 13:
+        score += 30
+    elif vix_value < 17:
+        score += 10
+    elif vix_value > 25:
+        score -= 20
+    if atr_ratio < 0.01:
+        score += 10
+    elif atr_ratio > 0.03:
+        score -= 10
+    return int(max(0, min(100, score)))
 
 # -----------------------------
-# 시장 데이터 수집
+# 시장 데이터 수집 (변동률: 전일 종가 대비 오늘 종가)
 # -----------------------------
 def fetch_market_data():
     sp_all = yf.Ticker("^GSPC").history(period="252d")
     sp_hist = sp_all.iloc[-60:]
-    ndx_hist = yf.Ticker("^NDX").history(period="1d")
+    ndx_all = yf.Ticker("^NDX").history(period="252d")
+    ndx_hist = ndx_all.iloc[-60:]
     vix_hist = yf.Ticker("^VIX").history(period="2d")
 
+    # 전일 종가 대비 오늘 종가 기준 변동률 (안정화)
+    sp_yesterday = sp_all.iloc[-2]
     sp_today = sp_all.iloc[-1]
-    sp_change = float((sp_today["Close"] - sp_today["Open"]) / sp_today["Open"] * 100)
+    sp_change = float((sp_today["Close"] - sp_yesterday["Close"]) / sp_yesterday["Close"] * 100)
 
-    ndx_close = ndx_hist["Close"]
-    ndx_open = ndx_hist["Open"]
-    ndx_change = float((float(ndx_close.iloc[-1]) - float(ndx_open.iloc[-1])) / float(ndx_open.iloc[-1]) * 100)
+    ndx_yesterday = ndx_all.iloc[-2]
+    ndx_today = ndx_all.iloc[-1]
+    ndx_change = float((ndx_today["Close"] - ndx_yesterday["Close"]) / ndx_yesterday["Close"] * 100)
 
     vix_close = vix_hist["Close"]
     vix_value = float(vix_close.iloc[-1])
@@ -257,10 +283,14 @@ def fetch_market_data():
 
     indicators = compute_indicators(sp_hist[["Open", "High", "Low", "Close"]])
 
-    proxy_fgi, breadth_score = compute_proxy_fgi()
+    proxy_fgi, breadth_raw = compute_proxy_fgi()
     fx_now, tnx_now, oil_now = get_macro_data()
 
     high_52w = float(sp_all["High"].max()) if len(sp_all) > 0 else 0
+
+    # 50MA, 200MA (추세용)
+    ma50 = float(sp_all["Close"].rolling(50).mean().iloc[-1])
+    ma200 = float(sp_all["Close"].rolling(200).mean().iloc[-1]) if len(sp_all) >= 200 else None
 
     return {
         "sp_change": sp_change,
@@ -268,9 +298,11 @@ def fetch_market_data():
         "vix_value": vix_value,
         "vix_prev": vix_prev,
         "high_52w": high_52w,
+        "ma50": ma50,
+        "ma200": ma200,
         **indicators,
         "proxy_fgi": proxy_fgi,
-        "breadth_score": breadth_score,
+        "breadth_raw": breadth_raw,
         "fx_now": fx_now,
         "tnx_now": tnx_now,
         "oil_now": oil_now,
@@ -331,7 +363,7 @@ def indicator_comments(data, high_52w, vix_value, vix_prev):
 
 
 # -----------------------------
-# 메인 실행 (메시지 포맷 전체 리팩토링)
+# 메인 실행 (요청한 1~6번 반영, 행동기준은 원래 방식)
 # -----------------------------
 def main():
     data = fetch_market_data()
@@ -342,18 +374,39 @@ def main():
     vix_value = data["vix_value"]
     vix_prev = data["vix_prev"]
     high_52w = data["high_52w"]
+    ma50 = data["ma50"]
+    ma200 = data["ma200"]
 
     proxy_fgi = data["proxy_fgi"]
-    breadth_score = data["breadth_score"]
+    breadth_raw = data["breadth_raw"]
     fx_now = data["fx_now"]
     tnx_now = data["tnx_now"]
     oil_now = data["oil_now"]
-    macro_score = compute_macro_score(fx_now, tnx_now)
+
+    # Macro score (FX/TNX/OIL)
+    macro_score = compute_macro_score(fx_now, tnx_now, oil_now)
+
+    # Breadth 스케일링 (구간화)
+    if breadth_raw >= 70:
+        breadth_score = 95
+        breadth_label = "과열"
+    elif breadth_raw >= 60:
+        breadth_score = 80
+        breadth_label = "강세"
+    elif breadth_raw >= 40:
+        breadth_score = 50
+        breadth_label = "중립"
+    elif breadth_raw >= 30:
+        breadth_score = 30
+        breadth_label = "약세"
+    else:
+        breadth_score = 10
+        breadth_label = "위험"
 
     # 코멘트 생성
     comments = indicator_comments(data, high_52w, vix_value, vix_prev)
 
-    # 기술 점수 계산
+    # 기술 점수 계산 (기존 지표들)
     tech_score_raw = 0
     if data["rsi"] >= 80: tech_score_raw += 10
     if data["bb_pos"] >= 80: tech_score_raw += 10
@@ -366,12 +419,41 @@ def main():
     if data["ma_deviation_pct"] >= 5: tech_score_raw += 10
     if high_52w > 0 and data["price"] >= high_52w * 0.95: tech_score_raw += 10
 
+    # 추세 점수 추가 (50MA / 200MA)
+    price_now = data["price"]
+    if price_now > ma50:
+        tech_score_raw += 5
+    if ma200 is not None and price_now > ma200:
+        tech_score_raw += 5
+
+    # tech_score를 0~40 스케일로 유지
     tech_score = tech_score_raw * 0.4
 
-    # 최종 점수
-    final_score = int(tech_score * 0.4 + proxy_fgi * 0.3 + macro_score * 0.2 + proxy_fgi * 0.1)
+    # 변동성 안정성 점수 (VIX + ATR)
+    vol_stability = compute_volatility_stability(vix_value, data["atr_ratio"])
 
-    # 행동 결정
+    # 최종 점수 가중합 (tech 40%, proxy 30%, macro 15%, breadth 10%, vol 5%)
+    final_score = int(
+        tech_score +
+        proxy_fgi * 0.3 +
+        macro_score * 0.15 +
+        breadth_score * 0.10 +
+        vol_stability * 0.05
+    )
+
+    # 요약 문구 (한 줄)
+    if final_score >= 85:
+        summary = "과열 구간에 근접 → 리스크 관리 최우선"
+    elif final_score >= 70:
+        summary = "상당한 과열 신호 → 매도/비중축소 고려"
+    elif final_score >= 55:
+        summary = "중립~살짝 과열 → 관망 또는 소량 조절"
+    elif final_score >= 40:
+        summary = "중립~저평가 구간 → 분할 매수 고려"
+    else:
+        summary = "공포·저평가 구간 → 공격적 매수 구간 후보"
+
+    # 행동 결정 (원래 방식으로 복원)
     avg_change = (sp_change + ndx_change) / 2
 
     if final_score >= 90:
@@ -415,12 +497,15 @@ def main():
         high52_line = "- 데이터 없음\n"
 
     # -----------------------------
-    # 텔레그램 메시지 (깔끔한 포맷)
+    # 텔레그램 메시지 (요약 포함)
     # -----------------------------
     telegram_message = f"""
 📊 [정수 버블 체크]
 
-📈 지수 변동
+📌 요약
+- {summary}
+
+📈 지수 변동 (전일 종가 대비)
 - S&P500: {sp_change:.2f}%
 - NASDAQ: {ndx_change:.2f}%
 - VIX: {vix_value:.2f}
@@ -428,59 +513,26 @@ def main():
   → 전일 대비 {comments['vix_change_c']}
 
 🔍 기술적 지표 요약
+- RSI: {data['rsi']:.2f} ({comments['rsi_c']})
+- Bollinger Band 위치: {data['bb_pos']:.1f}%
+- ATR 비율: {data['atr_ratio']*100:.2f}%
 
-🔸 MACD
-- MACD / Signal / Hist: {data['macd']:.4f} / {data['macd_signal']:.4f} / {data['macd_hist']:.4f}
-- 해석: {comments['macd_level_c']} / {comments['macd_signal_c']} / {comments['macd_hist_c']}
-- 변화:
-  • MACD {comments['macd_change_c']}
-  • Signal {comments['macd_signal_change_c']}
-  • Hist {comments['macd_hist_change_c']}
-
-🔸 RSI(14)
-- {data['rsi']:.2f} → {comments['rsi_c']}
-- 변화: {comments['rsi_change_c']}
-
-🔸 Bollinger Band
-- 위치: {data['bb_pos']:.1f}% (상단 {data['bb_upper']:.2f}, 하단 {data['bb_lower']:.2f})
-- 해석: {comments['bb_c']}
-- 변화: {comments['bb_change_c']}
-
-🔸 Stochastic Slow
-- %K / %D: {data['stoch_k']:.2f} / {data['stoch_d']:.2f}
-- 해석: {comments['stoch_c']}
-- 변화:
-  • K {comments['stoch_k_change_c']}
-  • D {comments['stoch_d_change_c']}
-
-🔸 CCI(20)
-- {data['cci']:.2f} → {comments['cci_c']}
-- 변화: {comments['cci_change_c']}
-
-🔸 Williams %R
-- {data['williams_r']:.2f} → {comments['wr_c']}
-- 변화: {comments['wr_change_c']}
-
-🔸 ATR 비율
-- {data['atr_ratio']*100:.2f}% → {comments['atr_c']}
-- 변화: {comments['atr_change_c']}
-
-🔸 20MA 괴리율
-- {data['ma_deviation_pct']:.2f}% → {comments['ma_c']}
-- 변화: {comments['ma_change_c']}
-
-🔸 52주 고점 대비
-{high52_line}
+🔎 추가 지표
+- 50MA: {ma50:.2f}
+- 200MA: {ma200 if ma200 is not None else '데이터 없음'}
+- Breadth: {breadth_raw} → {breadth_label} (스케일: {breadth_score})
+- Macro score (FX/TNX/OIL): {macro_score}/100
+- Volatility stability: {vol_stability}/100
 
 🧮 점수
-- 기술 점수: {tech_score_raw}/100
+- 기술 점수 (raw): {tech_score_raw}/100 (스케일 적용: {tech_score:.1f})
 - Proxy FGI: {proxy_fgi}/100
 - 매크로 점수: {macro_score}/100
 - Breadth 점수: {breadth_score}/100
+- 변동성 안정성: {vol_stability}/100
 - 총 점수: {final_score}/100
 
 🧭 결론
-- 75점↑ 매도 / 90점↑ 전량 매도
 - 현재: {result}
 - 매수 금액: {buy_amount:,}원
 
