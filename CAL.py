@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import yfinance as yf
 import pandas as pd
 from textblob import TextBlob
+from datetime import datetime
 
 # -----------------------------
 # 텔레그램 전송
@@ -13,6 +14,15 @@ def send_telegram(message):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": message}
     requests.post(url, data=payload)
+
+# -----------------------------
+# 디데이 날짜계산
+# -----------------------------
+def get_dday(target_date_str="2026-06-15"):
+    today = datetime.now().date()
+    target = datetime.strptime(target_date_str, "%Y-%m-%d").date()
+    diff = (target - today).days
+    return diff
 
 # -----------------------------
 # 기술적 지표 계산
@@ -325,6 +335,7 @@ def indicator_comments(data, high_52w, vix_value, vix_prev):
 # -----------------------------
 def main():
     data = fetch_market_data()
+    dday = get_dday()
 
     sp_change = data["sp_change"]
     ndx_change = data["ndx_change"]
@@ -475,6 +486,8 @@ def main():
 
 💼 포트폴리오 매수 금액
 {portfolio_text}
+
+📅 D-Day: 2026-06-15 (D-{dday})
 """
 
     send_telegram(telegram_message)
