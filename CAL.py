@@ -178,9 +178,9 @@ def compute_proxy_fgi():
         vol_score = max(0, min(100, 100 - abs(vix_change) * 2))
 
         proxy_fgi = int((vix_score + junk_score + safe_score +
-                         momentum_score + breadth_score + vol_score) / 6)
+                         momentum_score + vol_score) / 5)
 
-        return proxy_fgi
+        return proxy_fgi, breadth_score
 
     except:
         return 50
@@ -201,6 +201,29 @@ def get_macro_data():
         return fx, tnx, oil
     except:
         return None, None, None
+        
+# -----------------------------
+# Macro 계산
+# -----------------------------
+def compute_macro_score(fx_now, tnx_now):
+    macro_score = 50  # 기본값
+
+    # 1. 환율
+    if fx_now is not None:
+        if fx_now < 1300:
+            macro_score += 15
+        elif fx_now > 1400:
+            macro_score -= 15
+
+    # 2. 금리
+    if tnx_now is not None:
+        if tnx_now < 3.5:
+            macro_score += 15
+        elif tnx_now > 4.5:
+            macro_score -= 15
+
+    return max(0, min(100, macro_score))
+
 
 # -----------------------------
 # 시장 데이터 수집
@@ -224,7 +247,7 @@ def fetch_market_data():
 
     indicators = compute_indicators(sp_hist[["Open", "High", "Low", "Close"]])
 
-    proxy_fgi = compute_proxy_fgi()
+    proxy_fgi, breadth_score = compute_proxy_fgi()
     fx_now, tnx_now, oil_now = get_macro_data()
 
     high_52w = float(sp_all["High"].max()) if len(sp_all) > 0 else 0
@@ -237,6 +260,7 @@ def fetch_market_data():
         "high_52w": high_52w,
         **indicators,
         "proxy_fgi": proxy_fgi,
+        "breadth_score": breadth_score,
         "fx_now": fx_now,
         "tnx_now": tnx_now,
         "oil_now": oil_now,
@@ -309,9 +333,11 @@ def main():
     high_52w = data["high_52w"]
 
     proxy_fgi = data["proxy_fgi"]
+    breadth_score = data["breadth_score"]
     fx_now = data["fx_now"]
     tnx_now = data["tnx_now"]
     oil_now = data["oil_now"]
+    macro_score = compute_macro_score(fx_now, tnx_now)
 
     # 코멘트 생성
     comments = indicator_comments(data, high_52w, vix_value, vix_prev)
@@ -332,7 +358,7 @@ def main():
     tech_score = tech_score_raw * 0.4
 
     # 최종 점수
-    final_score = int(tech_score + proxy_fgi * 0.5)
+    final_score = int(tech_score * 0.4 + proxy_fgi * 0.3 + macro_score * 0.2 + proxy_fgi * 0.1)
 
     # 행동 결정
     avg_change = (sp_change + ndx_change) / 2
@@ -438,6 +464,8 @@ def main():
 🧮 점수
 - 기술 점수: {tech_score_raw}/100
 - Proxy FGI: {proxy_fgi}/100
+- 매크로 점수: {macro_score}/100
+- Breadth 점수: {breadth_score}/100
 - 총 점수: {final_score}/100
 
 🧭 결론
