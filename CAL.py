@@ -2,15 +2,11 @@ import requests
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
-import json
 import time
-import os
 
 # -----------------------------
 # 설정
 # -----------------------------
-CACHE_FILE = "fgi_cache.json"
-CACHE_TTL = 3600  # 초 단위, 1시간 캐시
 DEBUG = False
 
 # -----------------------------
@@ -71,14 +67,12 @@ def compute_indicators(df: pd.DataFrame):
     std20 = close.rolling(20).std()
     upper = float((ma20 + 2 * std20).iloc[-1])
     lower = float((ma20 - 2 * std20).iloc[-1])
-    upper_prev = float((ma20 + 2 * std20).iloc[-2])
-    lower_prev = float((ma20 - 2 * std20).iloc[-2])
-
+    
     price = float(close.iloc[-1])
     price_prev = float(close.iloc[-2])
 
     bb_pos = (price - lower) / (upper - lower) * 100 if upper != lower else 50
-    bb_pos_prev = (price_prev - lower_prev) / (upper_prev - lower_prev) * 100 if upper_prev != lower_prev else 50
+    bb_pos_prev = (price_prev - float((ma20 - 2 * std20).iloc[-2])) / (float((ma20 + 2 * std20).iloc[-2]) - float((ma20 - 2 * std20).iloc[-2])) * 100 if upper != lower else 50
 
     # Stochastic Slow
     low14 = low.rolling(14).min()
@@ -152,114 +146,96 @@ def format_change(curr, prev, digits=2):
     return f"{delta:+.{digits}f} ({pct:+.{digits}f}%)"
 
 # -----------------------------
-# 4. 캐시 유틸리티 (FGI 캐시)
+# 4. Proxy FGI (대체 지표 계산)
+#    - 파일 저장 대신 실시간 데이터로 추정
 # -----------------------------
-def load_cached_fgi():
-    """캐시된 FGI 값(정수) 반환. 만료되었거나 없으면 None."""
-    if not os.path.exists(CACHE_FILE):
-        return None
-    try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-        if time.time() - obj.get("ts", 0) < CACHE_TTL:
-            return obj.get("fgi")
-    except Exception:
-        return None
-    return None
-
-def get_cached_fgi_timestamp():
-    """캐시 파일의 타임스탬프(초) 반환. 없으면 None."""
-    if not os.path.exists(CACHE_FILE):
-        return None
-    try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-        return obj.get("ts")
-    except Exception:
-        return None
-
-def save_cached_fgi(fgi):
-    try:
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump({"ts": time.time(), "fgi": fgi}, f)
-    except Exception:
-        pass
-
-# -----------------------------
-# 5. CNN FGI + Breadth (응답 검증, 캐시, 안전 처리)
-#    — 변경: 실패 시 캐시에 저장된 마지막 값(있다면) 사용
-# -----------------------------
-def get_real_cnn_fgi_and_breadth():
+def compute_proxy_fgi(indicators, vix_value):
     """
-    CNN FGI를 시도하되, 실패하면 캐시에 저장된 마지막 값을 사용.
-    반환: (fgi_value:int, breadth_raw:int, fgi_from_cache:bool, breadth_from_cache:bool)
+    CNN API 실패 시 호출. RSI, VIX, 이격도 등을 종합하여 FGI 유사 점수(0~100) 산출
     """
-    # 1) 캐시 확인(마지막 값 우선)
-    cached = load_cached_fgi()
-    fgi_from_cache = False
-    if cached is not None:
-        if DEBUG:
-            print("FGI 캐시 사용:", cached)
-        fgi_value = cached
-        fgi_from_cache = True
-    else:
-        fgi_value = 50  # 기본값
+    score = 0
+    
+    # 1. RSI (모멘텀): 낮을수록 공포(점수 낮음), 높을수록 탐욕(점수 높음)
+    rsi = indicators.get("rsi", 50)
+    if rsi < 30: score += 15       # 극심한 공포
+    elif rsi < 45: score += 30     # 공포
+    elif rsi < 55: score += 50     # 중립
+    elif rsi < 70: score += 70     # 탐욕
+    else: score += 90              # 극심한 탐욕
 
-    # 2) CNN 시도 (성공하면 캐시에 저장하고 fgi_value 갱신)
+    # 2. VIX (시장 공포): 높을수록 공포(점수 낮음)
+    # VIX가 20 이상이면 공포, 15 이하이면 평온
+    if vix_value > 30: score += 10
+    elif vix_value > 20: score += 30
+    elif vix_value > 15: score += 50
+    elif vix_value > 12: score += 75
+    else: score += 90
+
+    # 3. 20MA 이격도 (추세): 하락 추세면 공포
+    dev = indicators.get("ma_deviation_pct", 0)
+    if dev < -5: score += 10
+    elif dev < -1: score += 30
+    elif dev < 1: score += 50
+    elif dev < 5: score += 70
+    else: score += 90
+
+    # 단순 평균으로 0~100 환산
+    final_proxy = int(score / 3)
+    return max(0, min(100, final_proxy))
+
+# -----------------------------
+# 5. FGI + Breadth 데이터 통합 수집
+# -----------------------------
+def get_fgi_and_breadth(indicators, vix_value):
+    """
+    CNN FGI 시도 -> 실패 시 Proxy FGI 계산
+    Breadth는 실시간 계산 -> 실패 시 기본값
+    """
+    fgi_value = 50
+    is_proxy_fgi = False
+
+    # 1) CNN FGI 시도
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         url = "https://production.dataviz.cnn.io/index/fearandgreed/static/history"
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=headers, timeout=5) # 타임아웃 5초
         if res.status_code == 200:
-            try:
-                data = res.json()
-                if isinstance(data, dict) and 'market_rating_indicator' in data and isinstance(data['market_rating_indicator'], dict) and 'rating_value' in data['market_rating_indicator']:
-                    fetched = int(data['market_rating_indicator']['rating_value'])
-                    fgi_value = fetched
-                    save_cached_fgi(fgi_value)
-                    fgi_from_cache = False
-                    if DEBUG:
-                        print("CNN FGI 수집 성공:", fgi_value)
-                else:
-                    if DEBUG:
-                        print("CNN FGI: 응답 구조 불일치, 캐시/기본값 사용")
-            except Exception as e:
-                if DEBUG:
-                    print("CNN FGI JSON 파싱 에러:", e)
+            data = res.json()
+            if 'market_rating_indicator' in data and 'rating_value' in data['market_rating_indicator']:
+                fgi_value = int(data['market_rating_indicator']['rating_value'])
+                is_proxy_fgi = False
+                if DEBUG: print(f"CNN FGI 성공: {fgi_value}")
+            else:
+                raise ValueError("JSON 구조 불일치")
         else:
-            if DEBUG:
-                print(f"CNN FGI 수집 실패 (Status: {res.status_code}), 캐시/기본값 사용")
+            raise ConnectionError(f"Status Code: {res.status_code}")
     except Exception as e:
-        if DEBUG:
-            print("CNN FGI 요청 예외:", e)
+        if DEBUG: print(f"CNN FGI 실패 ({e}) -> Proxy 계산")
+        # 실패 시 Proxy 계산
+        fgi_value = compute_proxy_fgi(indicators, vix_value)
+        is_proxy_fgi = True
 
-    # 3) Breadth 안전 처리 (항상 실시간 계산; 실패 시 기본값 사용)
+    # 2) Breadth (상승/하락 종목 수)
     breadth_raw = 50
-    breadth_from_cache = False
+    is_proxy_breadth = False
     try:
         adv_hist = yf.Ticker("^ADVN").history(period="1d")["Close"]
         dec_hist = yf.Ticker("^DECL").history(period="1d")["Close"]
-
-        adv = float(adv_hist.iloc[-1]) if (hasattr(adv_hist, "empty") and not adv_hist.empty) else None
-        dec = float(dec_hist.iloc[-1]) if (hasattr(dec_hist, "empty") and not dec_hist.empty) else None
-
-        if adv is None or dec is None or (adv + dec) == 0:
-            breadth_raw = 50
-            breadth_from_cache = True
-            if DEBUG:
-                print("Breadth 데이터 부족, 기본값 사용")
-        else:
+        
+        adv = float(adv_hist.iloc[-1]) if not adv_hist.empty else 0
+        dec = float(dec_hist.iloc[-1]) if not dec_hist.empty else 0
+        
+        if adv + dec > 0:
             breadth_raw = int((adv / (adv + dec)) * 100)
-            breadth_from_cache = False
-            if DEBUG:
-                print("Breadth 계산:", breadth_raw)
-    except Exception as e:
-        if DEBUG:
-            print("Breadth 계산 에러:", e)
+            is_proxy_breadth = False
+        else:
+            breadth_raw = 50
+            is_proxy_breadth = True
+    except Exception:
         breadth_raw = 50
-        breadth_from_cache = True
+        is_proxy_breadth = True
 
-    return fgi_value, breadth_raw, fgi_from_cache, breadth_from_cache
+    return fgi_value, breadth_raw, is_proxy_fgi, is_proxy_breadth
 
 # -----------------------------
 # 6. 매크로 데이터 (환율/금리/유가)
@@ -281,7 +257,7 @@ def get_macro_data():
 def compute_macro_score(fx_now, tnx_now, oil_now):
     macro_score = 50  # 기본값
 
-    # 환율
+    # 1. 환율 (FX)
     if fx_now is not None:
         if fx_now < 1320: macro_score += 20
         elif fx_now < 1380: macro_score += 10
@@ -290,7 +266,7 @@ def compute_macro_score(fx_now, tnx_now, oil_now):
         elif fx_now < 1500: macro_score -= 20
         else: macro_score -= 30
 
-    # 금리
+    # 2. 금리 (TNX)
     if tnx_now is not None:
         if tnx_now < 3.5: macro_score += 20
         elif tnx_now < 4.0: macro_score += 10
@@ -299,7 +275,7 @@ def compute_macro_score(fx_now, tnx_now, oil_now):
         elif tnx_now < 4.9: macro_score -= 25
         else: macro_score -= 35
 
-    # 유가
+    # 3. 유가 (WTI)
     if oil_now is not None:
         if oil_now < 55: macro_score += 25
         elif oil_now < 65: macro_score += 15
@@ -327,7 +303,7 @@ def compute_volatility_stability(vix_value, atr_ratio):
     return int(max(0, min(100, score)))
 
 # -----------------------------
-# 8. 포트폴리오 수익률 기반 배수 함수
+# 8. 포트폴리오 수익률 및 데이터 수집
 # -----------------------------
 def get_ticker_returns(tickers):
     returns = {}
@@ -353,16 +329,13 @@ def allocation_multiplier_from_return(pct):
     if pct < 5.0: return 0.80
     return 0.50
 
-# -----------------------------
-# 9. 데이터 수집 통합 함수
-# -----------------------------
 def fetch_market_data():
     sp_all = yf.Ticker("^GSPC").history(period="252d")
     sp_hist = sp_all.iloc[-60:]
     ndx_all = yf.Ticker("^NDX").history(period="252d")
     vix_hist = yf.Ticker("^VIX").history(period="2d")
 
-    # 변동률 계산 (전일 종가 대비)
+    # 변동률
     sp_yesterday = sp_all.iloc[-2]
     sp_today = sp_all.iloc[-1]
     sp_change = float((sp_today["Close"] - sp_yesterday["Close"]) / sp_yesterday["Close"] * 100)
@@ -378,8 +351,8 @@ def fetch_market_data():
     # 지표 계산
     indicators = compute_indicators(sp_hist[["Open", "High", "Low", "Close"]])
 
-    # CNN FGI + Breadth (캐시 포함)
-    cnn_fgi, breadth_raw, fgi_from_cache, breadth_from_cache = get_real_cnn_fgi_and_breadth()
+    # CNN FGI + Breadth (Proxy 로직 포함)
+    fgi_val, breadth_val, is_proxy_fgi, is_proxy_breadth = get_fgi_and_breadth(indicators, vix_value)
 
     # 매크로
     fx_now, tnx_now, oil_now = get_macro_data()
@@ -398,17 +371,17 @@ def fetch_market_data():
         "ma50": ma50,
         "ma200": ma200,
         **indicators,
-        "real_fgi": cnn_fgi,
-        "breadth_score": breadth_raw,
+        "real_fgi": fgi_val,
+        "breadth_score": breadth_val,
+        "is_proxy_fgi": is_proxy_fgi,
+        "is_proxy_breadth": is_proxy_breadth,
         "fx_now": fx_now,
         "tnx_now": tnx_now,
         "oil_now": oil_now,
-        "fgi_from_cache": fgi_from_cache,
-        "breadth_from_cache": breadth_from_cache,
     }
 
 # -----------------------------
-# 10. 상세 코멘트 생성
+# 9. 상세 코멘트 생성
 # -----------------------------
 def indicator_comments(data, high_52w, vix_value, vix_prev):
     comments = {}
@@ -463,11 +436,16 @@ def indicator_comments(data, high_52w, vix_value, vix_prev):
     return comments
 
 # -----------------------------
-# 11. 메인 실행
+# 10. 메인 실행
 # -----------------------------
 def main():
     print("데이터 수집 시작...")
-    data = fetch_market_data()
+    try:
+        data = fetch_market_data()
+    except Exception as e:
+        print(f"데이터 수집 중 치명적 오류: {e}")
+        return
+
     dday = get_dday()
 
     sp_change = data["sp_change"]
@@ -478,20 +456,21 @@ def main():
     ma50 = data["ma50"]
     ma200 = data["ma200"]
 
-    real_fgi = data["real_fgi"]
+    fgi_val = data["real_fgi"]
     breadth_raw = data["breadth_score"]
+    
+    # Proxy 여부 확인
+    is_proxy_fgi = data["is_proxy_fgi"]
+    is_proxy_breadth = data["is_proxy_breadth"]
 
     fx_now = data["fx_now"]
     tnx_now = data["tnx_now"]
     oil_now = data["oil_now"]
 
-    fgi_from_cache = data.get("fgi_from_cache", False)
-    breadth_from_cache = data.get("breadth_from_cache", False)
-
     # Macro score
     macro_score = compute_macro_score(fx_now, tnx_now, oil_now)
 
-    # Breadth Score Logic
+    # Breadth Label
     if breadth_raw >= 70:
         breadth_score = 95
         breadth_label = "과열"
@@ -508,10 +487,9 @@ def main():
         breadth_score = 10
         breadth_label = "위험"
 
-    # 코멘트 생성
     comments = indicator_comments(data, high_52w, vix_value, vix_prev)
 
-    # 기술 점수 (Tech Score) 계산
+    # Tech Score
     tech_score_raw = 0
     if data["rsi"] >= 80: tech_score_raw += 10
     if data["bb_pos"] >= 80: tech_score_raw += 10
@@ -524,27 +502,25 @@ def main():
     if data["ma_deviation_pct"] >= 5: tech_score_raw += 10
     if high_52w > 0 and data["price"] >= high_52w * 0.95: tech_score_raw += 10
 
-    # 추세 점수 추가
     if data["price"] > ma50: tech_score_raw += 5
     if ma200 is not None and data["price"] > ma200: tech_score_raw += 5
 
-    # 클램프 및 스케일링
     tech_score_raw = min(100, max(0, tech_score_raw))
-    tech_score = tech_score_raw * 0.4  # 기술 점수의 최대 기여는 40점
+    tech_score = tech_score_raw * 0.4
 
-    # 변동성 안정성
+    # Volatility Stability
     vol_stability = compute_volatility_stability(vix_value, data["atr_ratio"])
 
-    # 최종 점수 (추천 구조)
+    # Final Score
     final_score = int(
         tech_score +
-        (real_fgi * 0.30) +
+        (fgi_val * 0.30) +
         (macro_score * 0.15) +
         (breadth_score * 0.10) +
         (vol_stability * 0.05)
     )
 
-    # 요약 문구
+    # Summary
     if final_score >= 85:
         summary = "과열 구간에 근접 → 리스크 관리 최우선"
     elif final_score >= 70:
@@ -556,9 +532,8 @@ def main():
     else:
         summary = "공포·저평가 구간 → 공격적 매수 구간 후보"
 
-    # 매수/매도 행동 결정
+    # Action
     avg_change = (sp_change + ndx_change) / 2
-
     if final_score >= 90:
         result = "전량 매도"
         buy_amount = 0
@@ -574,26 +549,19 @@ def main():
         result = "모으기 (적극)"
         buy_amount = max(0, int(10000 + ((49 - final_score) / 74) * 25000))
 
-    # -----------------------------
-    # 알림 라인 구성: FGI 또는 Breadth를 캐시/기본값으로 사용했을 때
-    # -----------------------------
+    # Alert Message
     alert_lines = []
-    if fgi_from_cache:
-        ts = get_cached_fgi_timestamp()
-        ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else "알 수 없음"
-        alert_lines.append(f"⚠️ 데이터 소스 오류 — CNN FGI를 최신으로 가져오지 못해 마지막 저장값({ts_str})을 사용합니다.")
-    if breadth_from_cache:
-        alert_lines.append("⚠️ Breadth 데이터 수집 실패 — 기본값(또는 마지막값)을 사용합니다.")
-    alert_line = "\n".join(alert_lines) + "\n\n" if alert_lines else ""
+    if is_proxy_fgi:
+        alert_lines.append("⚠️ CNN 데이터 수집 실패 → 자체 계산(Proxy) 지표 사용")
+    if is_proxy_breadth:
+        alert_lines.append("⚠️ Breadth 데이터 부족 → 기본값 사용")
+    alert_msg = "\n".join(alert_lines) + "\n\n" if alert_lines else ""
 
-    # -----------------------------
-    # 포트폴리오 배분 (수익률 기반 배수, 정규화 및 buy_amount 보호)
-    # -----------------------------
+    # Portfolio
     portfolio = {
         "SOXL": 20, "TNA": 20, "TECL": 10, "ETHU": 10,
         "SOLT": 10, "INDL": 10, "FNGU": 10, "CURE": 10,
     }
-
     tickers = list(portfolio.keys())
     ticker_returns = get_ticker_returns(tickers)
 
@@ -605,11 +573,7 @@ def main():
         adjusted_amounts[t] = base * mult
 
     total_adjusted = sum(adjusted_amounts.values()) if adjusted_amounts else 0
-
-    if total_adjusted <= 0 or buy_amount <= 0:
-        scale = 0.0
-    else:
-        scale = buy_amount / total_adjusted
+    scale = buy_amount / total_adjusted if (total_adjusted > 0 and buy_amount > 0) else 0.0
 
     portfolio_lines = []
     for t, adj in adjusted_amounts.items():
@@ -617,10 +581,9 @@ def main():
         pct = ticker_returns.get(t, 0.0)
         mult = allocation_multiplier_from_return(pct)
         portfolio_lines.append(f"{t}: {final_amt:,}원 (today {pct:+.2f}%, mult {mult})")
-
     portfolio_text = "\n".join(portfolio_lines)
 
-    # 52주 고점 텍스트
+    # 52w High
     if high_52w > 0:
         ratio_now = data["price"] / high_52w * 100
         high52_line = (
@@ -630,10 +593,10 @@ def main():
     else:
         high52_line = "- 데이터 없음\n"
 
-    # -----------------------------
-    # 텔레그램 메시지 생성 (alert_line을 맨 앞에 추가)
-    # -----------------------------
-    telegram_message = f"""{alert_line}📊 [정수 버블 체크 - Real CNN FGI]
+    # Telegram Message
+    fgi_display_name = "Proxy FGI (추정)" if is_proxy_fgi else "Real CNN FGI"
+    
+    telegram_message = f"""{alert_msg}📊 [정수 버블 체크 - {fgi_display_name}]
 
 📌 요약
 - {summary}
@@ -660,7 +623,7 @@ def main():
 - 변화: {comments['rsi_change_c']}
 
 🔸 Bollinger Band
-- 위치: {data['bb_pos']:.1f}% (상단 {data['bb_upper']:.2f}, 하단 {data['bb_lower']:.2f})
+- 위치: {data['bb_pos']:.1f}%
 - 해석: {comments['bb_c']}
 - 변화: {comments['bb_change_c']}
 
@@ -692,7 +655,7 @@ def main():
 
 🧮 점수 산출
 - 기술 점수(40%): {tech_score_raw}/100
-- Real CNN FGI(30%): {real_fgi}/100 🔥
+- {fgi_display_name}(30%): {fgi_val}/100 🔥
 - 매크로 점수(15%): {macro_score}/100
 - Breadth 점수(10%): {breadth_score}/100 ({breadth_label})
 - 변동성 안정성(5%): {vol_stability}/100
@@ -712,7 +675,7 @@ def main():
     send_telegram(telegram_message)
     print("텔레그램 전송 완료")
     if DEBUG:
-        print(f"DEBUG: tech_raw={tech_score_raw}, tech_score={tech_score}, real_fgi={real_fgi}, macro={macro_score}, breadth_raw={breadth_raw}, breadth_score={breadth_score}, vol_stability={vol_stability}, final={final_score}, buy_amount={buy_amount}")
+        print(f"DEBUG: Proxy={is_proxy_fgi}, FGI={fgi_val}, Final={final_score}")
 
 if __name__ == "__main__":
     main()
