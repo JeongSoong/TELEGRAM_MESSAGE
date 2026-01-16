@@ -467,8 +467,6 @@ def main():
     else:
         result = "모으기"
         buy_amount = int(10000 + ((74 - final_score) / 74) * 20000)
-        if avg_change > 0:
-            buy_amount = 10000
 
     # 포트폴리오 배분
     portfolio = {
