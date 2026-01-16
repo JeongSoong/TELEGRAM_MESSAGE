@@ -140,22 +140,21 @@ def format_change(curr, prev, digits=2):
     pct = delta / abs(prev) * 100
     return f"{delta:+.{digits}f} ({pct:+.{digits}f}%)"
 
-
 # -----------------------------
-# Proxy FGI 계산
+# Proxy FGI 계산 (Breadth 분리)
 # -----------------------------
 def compute_proxy_fgi():
     try:
         vix = yf.Ticker("^VIX").history(period="10d")["Close"]
         if len(vix) < 2:
-            return 50
+            return 50, 50
         vix_now = float(vix.iloc[-1])
         vix_change = (vix_now - float(vix.iloc[0])) / float(vix.iloc[0]) * 100
         vix_score = max(0, min(100, 100 - vix_now * 3))
 
         junk = yf.Ticker("HYG").history(period="30d")["Close"]
         if len(junk) < 2:
-            return 50
+            return 50, 50
         junk_now = float(junk.iloc[-1])
         junk_change = (junk_now - float(junk.iloc[0])) / float(junk.iloc[0]) * 100
         junk_score = max(0, min(100, 50 + junk_change * 5))
@@ -163,7 +162,7 @@ def compute_proxy_fgi():
         gold_hist = yf.Ticker("GC=F").history(period="1d")["Close"]
         sp_hist = yf.Ticker("^GSPC").history(period="1d")["Close"]
         if len(gold_hist) == 0 or len(sp_hist) == 0:
-            return 50
+            return 50, 50
         gold = float(gold_hist.iloc[-1])
         sp = float(sp_hist.iloc[-1])
         safe_ratio = gold / sp if sp != 0 else 1
@@ -171,38 +170,38 @@ def compute_proxy_fgi():
 
         sp125 = yf.Ticker("^GSPC").history(period="125d")["Close"]
         if len(sp125) < 2:
-            return 50
+            return 50, 50
         momentum = (float(sp125.iloc[-1]) - float(sp125.iloc[0])) / float(sp125.iloc[0]) * 100
         momentum_score = max(0, min(100, 50 + momentum))
 
         adv_hist = yf.Ticker("^ADVN").history(period="1d")["Close"]
         dec_hist = yf.Ticker("^DECL").history(period="1d")["Close"]
         if len(adv_hist) == 0 or len(dec_hist) == 0:
-            breadth_score = 50
+            breadth_raw = 50
         else:
             adv = float(adv_hist.iloc[-1])
             dec = float(dec_hist.iloc[-1])
             breadth_ratio = adv / (adv + dec) if (adv + dec) != 0 else 0.5
-            breadth_score = int(breadth_ratio * 100)
+            breadth_raw = int(breadth_ratio * 100)
 
         vol_score = max(0, min(100, 100 - abs(vix_change) * 2))
 
         proxy_fgi = int((vix_score + junk_score + safe_score +
                          momentum_score + vol_score) / 5)
 
-        return proxy_fgi, breadth_score
+        return proxy_fgi, breadth_raw
 
     except:
-        return 50
+        return 50, 50
 
 # -----------------------------
 # 환율 / 금리 / 유가
 # -----------------------------
 def get_macro_data():
     try:
-        fx_hist = yf.Ticker("USDKRW=X").history(period="1d")["Close"]
-        tnx_hist = yf.Ticker("^TNX").history(period="1d")["Close"]
-        oil_hist = yf.Ticker("CL=F").history(period="1d")["Close"]
+        fx_hist = yf.Ticker("USDKRW=X").history(period="5d")["Close"]
+        tnx_hist = yf.Ticker("^TNX").history(period="5d")["Close"]
+        oil_hist = yf.Ticker("CL=F").history(period="5d")["Close"]
 
         fx = float(fx_hist.iloc[-1]) if len(fx_hist) > 0 else None
         tnx = float(tnx_hist.iloc[-1]) if len(tnx_hist) > 0 else None
@@ -211,11 +210,11 @@ def get_macro_data():
         return fx, tnx, oil
     except:
         return None, None, None
-        
+
 # -----------------------------
-# Macro 계산
+# Macro 계산 (환율 + 금리 + 유가)
 # -----------------------------
-def compute_macro_score(fx_now, tnx_now):
+def compute_macro_score(fx_now, tnx_now, oil_now):
     macro_score = 50  # 기본값
 
     # 1. 환율
@@ -232,8 +231,14 @@ def compute_macro_score(fx_now, tnx_now):
         elif tnx_now > 4.5:
             macro_score -= 15
 
-    return max(0, min(100, macro_score))
+    # 3. 유가
+    if oil_now is not None:
+        if oil_now > 90:
+            macro_score -= 10
+        elif oil_now < 70:
+            macro_score += 5
 
+    return max(0, min(100, macro_score))
 
 # -----------------------------
 # 시장 데이터 수집
@@ -241,15 +246,16 @@ def compute_macro_score(fx_now, tnx_now):
 def fetch_market_data():
     sp_all = yf.Ticker("^GSPC").history(period="252d")
     sp_hist = sp_all.iloc[-60:]
-    ndx_hist = yf.Ticker("^NDX").history(period="1d")
+    ndx_hist = yf.Ticker("^NDX").history(period="2d")
     vix_hist = yf.Ticker("^VIX").history(period="2d")
 
+    # 전일 종가 대비 오늘 종가 기준 변동률
+    sp_yesterday = sp_all.iloc[-2]
     sp_today = sp_all.iloc[-1]
-    sp_change = float((sp_today["Close"] - sp_today["Open"]) / sp_today["Open"] * 100)
+    sp_change = float((sp_today["Close"] - sp_yesterday["Close"]) / sp_yesterday["Close"] * 100)
 
     ndx_close = ndx_hist["Close"]
-    ndx_open = ndx_hist["Open"]
-    ndx_change = float((float(ndx_close.iloc[-1]) - float(ndx_open.iloc[-1])) / float(ndx_open.iloc[-1]) * 100)
+    ndx_change = float((float(ndx_close.iloc[-1]) - float(ndx_close.iloc[-2])) / float(ndx_close.iloc[-2]) * 100)
 
     vix_close = vix_hist["Close"]
     vix_value = float(vix_close.iloc[-1])
@@ -257,10 +263,14 @@ def fetch_market_data():
 
     indicators = compute_indicators(sp_hist[["Open", "High", "Low", "Close"]])
 
-    proxy_fgi, breadth_score = compute_proxy_fgi()
+    proxy_fgi, breadth_raw = compute_proxy_fgi()
     fx_now, tnx_now, oil_now = get_macro_data()
 
     high_52w = float(sp_all["High"].max()) if len(sp_all) > 0 else 0
+
+    # 50MA, 200MA (추세용)
+    ma50 = float(sp_all["Close"].rolling(50).mean().iloc[-1])
+    ma200 = float(sp_all["Close"].rolling(200).mean().iloc[-1]) if len(sp_all) >= 200 else None
 
     return {
         "sp_change": sp_change,
@@ -268,9 +278,11 @@ def fetch_market_data():
         "vix_value": vix_value,
         "vix_prev": vix_prev,
         "high_52w": high_52w,
+        "ma50": ma50,
+        "ma200": ma200,
         **indicators,
         "proxy_fgi": proxy_fgi,
-        "breadth_score": breadth_score,
+        "breadth_raw": breadth_raw,
         "fx_now": fx_now,
         "tnx_now": tnx_now,
         "oil_now": oil_now,
@@ -329,7 +341,6 @@ def indicator_comments(data, high_52w, vix_value, vix_prev):
 
     return comments
 
-
 # -----------------------------
 # 메인 실행 (메시지 포맷 전체 리팩토링)
 # -----------------------------
@@ -342,13 +353,26 @@ def main():
     vix_value = data["vix_value"]
     vix_prev = data["vix_prev"]
     high_52w = data["high_52w"]
+    ma50 = data["ma50"]
+    ma200 = data["ma200"]
 
     proxy_fgi = data["proxy_fgi"]
-    breadth_score = data["breadth_score"]
+    breadth_raw = data["breadth_raw"]
     fx_now = data["fx_now"]
     tnx_now = data["tnx_now"]
     oil_now = data["oil_now"]
-    macro_score = compute_macro_score(fx_now, tnx_now)
+    macro_score = compute_macro_score(fx_now, tnx_now, oil_now)
+
+    # Breadth 점수 스케일링
+    breadth_score = breadth_raw
+    if breadth_raw >= 70:
+        breadth_score = min(100, breadth_raw + 10)
+    elif breadth_raw >= 60:
+        breadth_score = min(100, breadth_raw + 5)
+    elif breadth_raw <= 30:
+        breadth_score = max(0, breadth_raw - 10)
+    elif breadth_raw <= 40:
+        breadth_score = max(0, breadth_raw - 5)
 
     # 코멘트 생성
     comments = indicator_comments(data, high_52w, vix_value, vix_prev)
@@ -366,25 +390,48 @@ def main():
     if data["ma_deviation_pct"] >= 5: tech_score_raw += 10
     if high_52w > 0 and data["price"] >= high_52w * 0.95: tech_score_raw += 10
 
-    tech_score = tech_score_raw * 0.4
+    # 추세 점수 (50MA / 200MA)
+    price_now = data["price"]
+    if price_now > ma50:
+        tech_score_raw += 5
+    if ma200 is not None and price_now > ma200:
+        tech_score_raw += 5
 
-    # 최종 점수
-    final_score = int(tech_score * 0.4 + proxy_fgi * 0.3 + macro_score * 0.2 + proxy_fgi * 0.1)
+    tech_score = tech_score_raw * 0.4  # 최대 40점
 
-    # 행동 결정
+    # 최종 점수 (기술 + Proxy FGI + Macro + Breadth)
+    final_score = int(
+        tech_score +
+        proxy_fgi * 0.3 +
+        macro_score * 0.2 +
+        breadth_score * 0.1
+    )
+
+    # 행동 결정 (세분화)
     avg_change = (sp_change + ndx_change) / 2
 
     if final_score >= 90:
         result = "전량 매도"
         buy_amount = 0
-    elif final_score >= 75:
+    elif final_score >= 80:
+        result = "강한 매도"
+        buy_amount = 0
+    elif final_score >= 70:
         result = "분할 매도"
         buy_amount = 0
-    else:
-        result = "모으기"
-        buy_amount = int(10000 + ((74 - final_score) / 74) * 20000)
+    elif final_score >= 60:
+        result = "관망"
+        buy_amount = 0
+    elif final_score >= 40:
+        result = "소량 모으기"
+        buy_amount = int(10000 + ((59 - final_score) / 59) * 10000)
         if avg_change > 0:
             buy_amount = 10000
+    else:
+        result = "적극 모으기"
+        buy_amount = int(20000 + ((39 - final_score) / 39) * 20000)
+        if avg_change > 0:
+            buy_amount = 20000
 
     # 포트폴리오 배분
     portfolio = {
@@ -414,11 +461,26 @@ def main():
     else:
         high52_line = "- 데이터 없음\n"
 
+    # 요약 문구
+    if final_score >= 85:
+        summary = "과열 구간에 근접 → 리스크 관리 최우선"
+    elif final_score >= 70:
+        summary = "상당한 과열 신호 → 매도/비중축소 고려"
+    elif final_score >= 55:
+        summary = "중립~살짝 과열 → 관망 또는 소량 조절"
+    elif final_score >= 40:
+        summary = "중립~저평가 구간 → 분할 매수 고려"
+    else:
+        summary = "공포·저평가 구간 → 공격적 매수 구간 후보"
+
     # -----------------------------
     # 텔레그램 메시지 (깔끔한 포맷)
     # -----------------------------
     telegram_message = f"""
 📊 [정수 버블 체크]
+
+📌 요약
+- {summary}
 
 📈 지수 변동
 - S&P500: {sp_change:.2f}%
@@ -480,7 +542,7 @@ def main():
 - 총 점수: {final_score}/100
 
 🧭 결론
-- 75점↑ 매도 / 90점↑ 전량 매도
+- 70~79: 분할 매도 / 80~89: 강한 매도 / 90↑: 전량 매도
 - 현재: {result}
 - 매수 금액: {buy_amount:,}원
 
