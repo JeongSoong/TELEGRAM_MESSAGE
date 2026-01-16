@@ -429,14 +429,14 @@ def main():
         tech_score_raw += 5
 
     # tech_score를 0~40 스케일로 유지
-    tech_score = tech_score_raw * 0.4
+    tech_score = tech_score_raw
 
     # 변동성 안정성 점수 (VIX + ATR)
     vol_stability = compute_volatility_stability(vix_value, data["atr_ratio"])
 
     # 최종 점수 가중합 (추천 구조)
     final_score = int(
-        tech_score * 0.40 +
+        tech_score * 0.4+
         proxy_fgi * 0.30 +
         macro_score * 0.15 +
         breadth_score * 0.10 +
@@ -465,6 +465,7 @@ def main():
         result = "분할 매도"
         buy_amount = 0
     elif final_score >= 50:
+        result = "모으기"
         buy_amount = int(10000 + ((74 - final_score) / 74) * 20000)
         if avg_change > 0:
             buy_amount = 10000
