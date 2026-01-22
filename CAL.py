@@ -602,12 +602,12 @@ def main():
         buy_amount = 0
     elif final_score >= 50:
         result = "모으기"
-        buy_amount = int(10000 + ((74 - final_score) / 74) * 20000)
+        buy_amount = int(10000 + ((74 - final_score) / 74) * 25000)
         if avg_change > 0:
             buy_amount = 10000
     else:
         result = "모으기 (적극)"
-        buy_amount = max(0, int(10000 + ((49 - final_score) / 74) * 25000))
+        buy_amount = max(0, int(10000 + ((49 - final_score) / 74) * 30000))
 
     alert_lines = []
     if is_proxy_fgi:
