@@ -4,12 +4,12 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime
 import time
+import re
 
 # -----------------------------
 # 설정
 # -----------------------------
 DEBUG = False
-FINNHUB_KEY = os.environ.get("FINNHUB_KEY")  # Railway 환경변수로 설정하세요
 
 # -----------------------------
 # 1. 텔레그램 전송
@@ -183,124 +183,69 @@ def compute_proxy_breadth(sp_change):
     return 20
 
 # -----------------------------
-# 5. Finnhub 폴백 포함: FGI + Breadth 데이터 통합 수집
+# 5. FGI + Breadth 데이터 (Alternative.me + StockCharts + Proxy)
 # -----------------------------
 def get_fgi_and_breadth(indicators, vix_value, sp_change):
     """
-    순서:
-    1) CNN FGI 시도
+    1) FGI: Alternative.me Fear & Greed Index 우선
     2) 실패 시 Proxy FGI 계산
-    3) Breadth: yfinance (^ADVN/^DECL) 시도
-    4) 실패 시 Finnhub 폴백 시도 (환경변수 FINNHUB_KEY 필요)
-    5) 모두 실패하면 sp_change 기반 추정(Proxy breadth)
+    3) Breadth: StockCharts A/D 우선 (HTML 파싱)
+    4) 실패 시 sp_change 기반 Proxy breadth
     """
+    # FGI
     fgi_value = 50
     is_proxy_fgi = False
-
-    # 1) CNN FGI 시도
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        url = "https://production.dataviz.cnn.io/index/fearandgreed/static/history"
-        res = requests.get(url, headers=headers, timeout=6)
-        if res.status_code == 200:
-            data = res.json()
-            if isinstance(data, dict) and 'market_rating_indicator' in data and isinstance(data['market_rating_indicator'], dict) and 'rating_value' in data['market_rating_indicator']:
-                fgi_value = int(data['market_rating_indicator']['rating_value'])
-                is_proxy_fgi = False
-                if DEBUG: print(f"CNN FGI 성공: {fgi_value}")
-            else:
-                raise ValueError("CNN JSON 구조 불일치")
+        url = "https://api.alternative.me/fng/?limit=1&format=json"
+        res = requests.get(url, timeout=6)
+        res.raise_for_status()
+        j = res.json()
+        if isinstance(j, dict) and "data" in j and isinstance(j["data"], list) and len(j["data"]) > 0:
+            v = j["data"][0].get("value")
+            fgi_value = int(v)
+            is_proxy_fgi = False
+            if DEBUG:
+                print(f"Alternative.me FGI 성공: {fgi_value}")
         else:
-            raise ConnectionError(f"CNN Status {res.status_code}")
+            raise ValueError("Alternative.me JSON 구조 불일치")
     except Exception as e:
-        if DEBUG: print(f"CNN FGI 실패 ({e}) -> Proxy 계산")
+        if DEBUG:
+            print(f"Alternative.me FGI 실패 ({e}) -> Proxy 계산")
         fgi_value = compute_proxy_fgi(indicators, vix_value)
         is_proxy_fgi = True
 
-    # 2) Breadth 시도: yfinance 우선
+    # Breadth
     breadth_raw = 50
     is_proxy_breadth = False
     try:
-        adv_hist = yf.Ticker("^ADVN").history(period="1d")["Close"]
-        dec_hist = yf.Ticker("^DECL").history(period="1d")["Close"]
-        if not adv_hist.empty and not dec_hist.empty:
-            adv = float(adv_hist.iloc[-1])
-            dec = float(dec_hist.iloc[-1])
+        # StockCharts NYSE Advance/Decline 페이지 파싱 (예: $NYAD)
+        sc_url = "https://stockcharts.com/h-sc/ui?s=$NYAD"
+        res = requests.get(sc_url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+        res.raise_for_status()
+        html = res.text
+
+        # 아주 단순한 방식: "Advances" / "Declines" 숫자 패턴을 정규식으로 찾는다고 가정
+        # 실제 페이지 구조에 맞게 조정 필요
+        adv_match = re.search(r"Advances[^0-9]*([0-9,]+)", html)
+        dec_match = re.search(r"Declines[^0-9]*([0-9,]+)", html)
+
+        if adv_match and dec_match:
+            adv = float(adv_match.group(1).replace(",", ""))
+            dec = float(dec_match.group(1).replace(",", ""))
             if adv + dec > 0:
                 breadth_raw = int((adv / (adv + dec)) * 100)
                 is_proxy_breadth = False
+                if DEBUG:
+                    print(f"StockCharts Breadth 성공: adv={adv}, dec={dec}, breadth={breadth_raw}")
             else:
                 raise ValueError("adv+dec == 0")
         else:
-            raise ValueError("Empty adv/dec data")
-    except Exception as e_yf:
-        if DEBUG: print(f"yfinance breadth 실패: {e_yf}")
-        # 3) Finnhub 폴백 시도 (여러 엔드포인트 후보를 시도)
-        if FINNHUB_KEY:
-            try:
-                # Finnhub: 여러 엔드포인트 후보를 시도해보고, 성공하면 adv/dec 값을 해석
-                fh_endpoints = [
-                    f"https://finnhub.io/api/v1/market/adv?token={FINNHUB_KEY}",
-                    f"https://finnhub.io/api/v1/stock/market/adv?token={FINNHUB_KEY}",
-                    f"https://finnhub.io/api/v1/market/advdec?token={FINNHUB_KEY}",
-                ]
-                fh_success = False
-                for ep in fh_endpoints:
-                    try:
-                        r = requests.get(ep, timeout=6)
-                        if r.status_code != 200:
-                            if DEBUG: print(f"Finnhub endpoint {ep} status {r.status_code}")
-                            continue
-                        j = r.json()
-                        # 다양한 응답 구조에 대응
-                        # 케이스 A: {'adv': 123, 'dec': 456}
-                        if isinstance(j, dict):
-                            if 'adv' in j and 'dec' in j:
-                                adv = float(j.get('adv', 0))
-                                dec = float(j.get('dec', 0))
-                                if adv + dec > 0:
-                                    breadth_raw = int((adv / (adv + dec)) * 100)
-                                    is_proxy_breadth = False
-                                    fh_success = True
-                                    break
-                            # 케이스 B: {'advances': n, 'declines': m}
-                            if 'advances' in j and 'declines' in j:
-                                adv = float(j.get('advances', 0))
-                                dec = float(j.get('declines', 0))
-                                if adv + dec > 0:
-                                    breadth_raw = int((adv / (adv + dec)) * 100)
-                                    is_proxy_breadth = False
-                                    fh_success = True
-                                    break
-                            # 케이스 C: {'data': {'adv': n, 'dec': m}} 등
-                            if 'data' in j and isinstance(j['data'], dict):
-                                d = j['data']
-                                if 'adv' in d and 'dec' in d:
-                                    adv = float(d.get('adv', 0))
-                                    dec = float(d.get('dec', 0))
-                                    if adv + dec > 0:
-                                        breadth_raw = int((adv / (adv + dec)) * 100)
-                                        is_proxy_breadth = False
-                                        fh_success = True
-                                        break
-                        # 기타: 응답이 리스트 등인 경우는 무시
-                    except Exception as e_ep:
-                        if DEBUG: print(f"Finnhub endpoint {ep} 예외: {e_ep}")
-                        continue
-                if not fh_success:
-                    # Finnhub로도 못 구하면 proxy로 fallback
-                    if DEBUG: print("Finnhub로 breadth 획득 실패")
-                    breadth_raw = compute_proxy_breadth(sp_change)
-                    is_proxy_breadth = True
-            except Exception as e_fh:
-                if DEBUG: print(f"Finnhub 호출 실패: {e_fh}")
-                breadth_raw = compute_proxy_breadth(sp_change)
-                is_proxy_breadth = True
-        else:
-            # FINNHUB_KEY 없으면 바로 proxy
-            if DEBUG: print("FINNHUB_KEY 미설정, breadth proxy 사용")
-            breadth_raw = compute_proxy_breadth(sp_change)
-            is_proxy_breadth = True
+            raise ValueError("Adv/Dec 패턴 매칭 실패")
+    except Exception as e:
+        if DEBUG:
+            print(f"StockCharts breadth 실패: {e} -> Proxy breadth 사용")
+        breadth_raw = compute_proxy_breadth(sp_change)
+        is_proxy_breadth = True
 
     return fgi_value, breadth_raw, is_proxy_fgi, is_proxy_breadth
 
@@ -418,7 +363,7 @@ def fetch_market_data():
     # 지표 계산
     indicators = compute_indicators(sp_hist[["Open", "High", "Low", "Close"]])
 
-    # CNN FGI + Breadth (Finnhub 폴백 포함)
+    # FGI + Breadth (Alternative.me + StockCharts + Proxy)
     fgi_val, breadth_val, is_proxy_fgi, is_proxy_breadth = get_fgi_and_breadth(indicators, vix_value, sp_change)
 
     # 매크로
@@ -570,16 +515,17 @@ def main():
     if ma200 is not None and data.get("price",0) > ma200: tech_score_raw += 5
 
     tech_score_raw = min(100, max(0, tech_score_raw))
-    tech_score = tech_score_raw * 0.35
+    tech_score = tech_score_raw * 0.4
 
     vol_stability = compute_volatility_stability(vix_value, data.get("atr_ratio",0))
 
+    # 가중치는 기존 그대로 사용 (원하면 여기서 조정 가능)
     final_score = int(
         tech_score +
-        (fgi_val * 0.25) +
-        (macro_score * 0.20) +
+        (fgi_val * 0.30) +
+        (macro_score * 0.15) +
         (breadth_score * 0.10) +
-        (vol_stability * 0.10)
+        (vol_stability * 0.05)
     )
 
     if final_score >= 85:
@@ -611,9 +557,9 @@ def main():
 
     alert_lines = []
     if is_proxy_fgi:
-        alert_lines.append("⚠️ CNN 데이터 수집 실패 → 자체 계산(Proxy) 지표 사용")
+        alert_lines.append("⚠️ FGI 원본 실패 → Proxy FGI(추정) 사용")
     if is_proxy_breadth:
-        alert_lines.append("⚠️ Breadth 데이터 부족 → 기본값/추정값 사용")
+        alert_lines.append("⚠️ Breadth 원본 실패 → Proxy Breadth(추정) 사용")
     alert_msg = "\n".join(alert_lines) + "\n\n" if alert_lines else ""
 
     portfolio = {
@@ -641,12 +587,11 @@ def main():
         portfolio_lines.append(f"{t}: {final_amt:,}원 (today {pct:+.2f}%, mult {mult})")
     portfolio_text = "\n".join(portfolio_lines)
 
-    # 안전한 표시값
     bb_pos_display = f"{data.get('bb_pos', 50):.1f}"
     bb_upper = data.get('bb_upper', 0)
     bb_lower = data.get('bb_lower', 0)
 
-    fgi_display_name = "Proxy FGI (추정)" if is_proxy_fgi else "Real CNN FGI"
+    fgi_display_name = "Proxy FGI (추정)" if is_proxy_fgi else "Alternative.me FGI"
 
     telegram_message = f"""{alert_msg}📊 [정수 버블 체크 - {fgi_display_name}]
 
@@ -657,7 +602,7 @@ def main():
 - S&P500: {sp_change:.2f}%
 - NASDAQ: {ndx_change:.2f}%
 - VIX: {vix_value:.2f}
-  → {comments.get('vix_c', '-') if (comments := indicator_comments(data, high_52w, vix_value, vix_prev)) else '-' }
+  → {comments.get('vix_c', '-')}
   → 전일 대비 {comments.get('vix_change_c','-')}
 
 🔍 기술적 지표 요약
@@ -728,7 +673,7 @@ def main():
     send_telegram(telegram_message)
     print("텔레그램 전송 완료")
     if DEBUG:
-        print(f"DEBUG: Proxy={is_proxy_fgi}, FGI={fgi_val}, BreadthProxy={is_proxy_breadth}, Final={final_score}")
+        print(f"DEBUG: ProxyFGI={is_proxy_fgi}, FGI={fgi_val}, ProxyBreadth={is_proxy_breadth}, Final={final_score}")
 
 if __name__ == "__main__":
     main()
