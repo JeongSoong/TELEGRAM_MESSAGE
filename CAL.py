@@ -422,11 +422,22 @@ def get_ticker_returns(tickers):
     return returns
 
 def allocation_multiplier_from_return(pct):
-    if pct <= -3.0: return 1.30
+    # 급락 구간
+    if pct <= -6.0: return 1.60
+    if pct <= -4.0: return 1.45
+    if pct <= -2.0: return 1.30
     if pct <= -1.0: return 1.20
-    if pct < 0.0: return 1.10
-    if pct < 2.0: return 1.00
-    if pct < 5.0: return 0.80
+    if pct <= -0.3: return 1.10
+
+    # 중립 구간
+    if pct < 0.3: return 1.00
+
+    # 상승 구간
+    if pct < 1.0: return 0.90
+    if pct < 2.0: return 0.80
+    if pct < 4.0: return 0.65
+
+    # 과열 구간
     return 0.50
 
 def fetch_market_data():
