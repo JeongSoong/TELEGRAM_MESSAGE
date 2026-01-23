@@ -680,27 +680,26 @@ def main():
     else:
         summary = "공포·저평가 구간 → 공격적 매수 구간 후보"
 
-avg_change = (sp_change + ndx_change) / 2
+    avg_change = (sp_change + ndx_change) / 2
+    if final_score >= 70:
+        result = "전량 매도"
+        buy_amount = 0
 
-if final_score >= 70:
-    result = "전량 매도"
-    buy_amount = 0
+    elif final_score >= 60:
+        result = "분할 매도"
+        buy_amount = 0
 
-elif final_score >= 60:
-    result = "분할 매도"
-    buy_amount = 0
+    elif final_score >= 50:
+        result = "모으기"
+        # 1) final_score 기반 곡선형 기본 매수금액
+        buy_amount = base_buy_amount_from_score(final_score)
+        # 2) avg_change 기반 보정
+        buy_amount = adjust_by_avg_change(buy_amount, avg_change)
 
-elif final_score >= 50:
-    result = "모으기"
-    # 1) final_score 기반 곡선형 기본 매수금액
-    buy_amount = base_buy_amount_from_score(final_score)
-    # 2) avg_change 기반 보정
-    buy_amount = adjust_by_avg_change(buy_amount, avg_change)
-
-else:
-    result = "모으기 (적극)"
-    buy_amount = base_buy_amount_from_score(final_score)
-    buy_amount = adjust_by_avg_change(buy_amount, avg_change)
+    else:
+        result = "모으기 (적극)"
+        buy_amount = base_buy_amount_from_score(final_score)
+        buy_amount = adjust_by_avg_change(buy_amount, avg_change)
 
 
     alert_lines = []
