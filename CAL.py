@@ -5,11 +5,13 @@ import pandas as pd
 from datetime import datetime
 import time
 import re
+import json
 
 # -----------------------------
 # 설정
 # -----------------------------
 DEBUG = False
+FINNHUB_KEY = os.environ.get("FINNHUB_KEY")  # 안 써도 됨, 남겨둠
 
 # -----------------------------
 # 1. 텔레그램 전송
@@ -175,78 +177,167 @@ def compute_proxy_fgi(indicators, vix_value):
     final_proxy = int(score / 3)
     return max(0, min(100, final_proxy))
 
-def compute_proxy_breadth(sp_change):
-    if sp_change >= 1.0: return 80
-    if sp_change >= 0.3: return 65
-    if sp_change > -0.3: return 50
-    if sp_change > -1.0: return 35
-    return 20
+# -----------------------------
+# 4-2. Breadth PRO MAX 세부 점수 함수
+# -----------------------------
+def score_index(sp_change, ndx_change):
+    avg_idx = (sp_change + ndx_change) / 2
+    avg_idx = max(-3, min(3, avg_idx))
+    base = 50 + (avg_idx / 3) * 30
+    return base
+
+def score_vix_level(vix):
+    if vix <= 12: return +15
+    if vix <= 15: return +8
+    if vix <= 18: return +3
+    if vix <= 22: return 0
+    if vix <= 28: return -10
+    return -20
+
+def score_vix_change(vix_change_pct):
+    if vix_change_pct <= -10: return +12
+    if vix_change_pct <= -5: return +6
+    if vix_change_pct <= 0: return +2
+    if vix_change_pct <= 5: return -4
+    return -10
+
+def score_volatility(atr_ratio):
+    if atr_ratio <= 0.010: return +8
+    if atr_ratio <= 0.015: return +4
+    if atr_ratio <= 0.025: return 0
+    if atr_ratio <= 0.035: return -6
+    return -12
+
+def score_combo(sp_change, ndx_change, vix, vix_change_pct):
+    avg_idx = (sp_change + ndx_change) / 2
+    if avg_idx > 0.5 and vix_change_pct > 3:
+        return -8
+    if -0.3 <= avg_idx <= 0.3 and vix_change_pct <= -8:
+        return +10
+    return 0
+
+def compute_proxy_breadth_promax(sp_change, ndx_change, vix, vix_prev, atr_ratio):
+    # 1) 지수 기반
+    base = score_index(sp_change, ndx_change)
+
+    # 2) VIX 절대 수준
+    vix_level = score_vix_level(vix)
+
+    # 3) VIX 변화율
+    vix_change_pct = ((vix - vix_prev) / vix_prev) * 100 if vix_prev else 0
+    vix_change = score_vix_change(vix_change_pct)
+
+    # 4) ATR 변동성
+    vol = score_volatility(atr_ratio)
+
+    # 5) 조합 패턴
+    combo = score_combo(sp_change, ndx_change, vix, vix_change_pct)
+
+    # 합산
+    raw = base + vix_level + vix_change + vol + combo
+
+    # 0~100 클리핑
+    final = max(5, min(95, int(raw)))
+    return final
+
+
+def blend_real_breadth(proxy_val, real_val):
+    return int(proxy_val * 0.7 + real_val * 0.3)
 
 # -----------------------------
-# 5. FGI + Breadth 데이터 (Alternative.me + StockCharts + Proxy)
+# 5-1. FGI 안정화 버전
 # -----------------------------
-def get_fgi_and_breadth(indicators, vix_value, sp_change):
-    """
-    1) FGI: Alternative.me Fear & Greed Index 우선
-    2) 실패 시 Proxy FGI 계산
-    3) Breadth: StockCharts A/D 우선 (HTML 파싱)
-    4) 실패 시 sp_change 기반 Proxy breadth
-    """
-    # FGI
-    fgi_value = 50
-    is_proxy_fgi = False
-    try:
-        url = "https://api.alternative.me/fng/?limit=1&format=json"
-        res = requests.get(url, timeout=6)
-        res.raise_for_status()
-        j = res.json()
-        if isinstance(j, dict) and "data" in j and isinstance(j["data"], list) and len(j["data"]) > 0:
-            v = j["data"][0].get("value")
-            fgi_value = int(v)
-            is_proxy_fgi = False
-            if DEBUG:
-                print(f"Alternative.me FGI 성공: {fgi_value}")
-        else:
-            raise ValueError("Alternative.me JSON 구조 불일치")
-    except Exception as e:
-        if DEBUG:
-            print(f"Alternative.me FGI 실패 ({e}) -> Proxy 계산")
-        fgi_value = compute_proxy_fgi(indicators, vix_value)
-        is_proxy_fgi = True
+def fetch_fgi_stable(indicators, vix_value):
+    urls = [
+        "https://api.alternative.me/fng/?limit=1&format=json",
+        "https://alternative.me/fng/?limit=1&format=json",
+        "https://fear-and-greed-index.p.rapidapi.com/v1/fgi"
+    ]
 
-    # Breadth
-    breadth_raw = 50
-    is_proxy_breadth = False
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "application/json"
+    }
+
+    for url in urls:
+        for attempt in range(3):
+            try:
+                res = requests.get(url, headers=headers, timeout=6)
+                res.raise_for_status()
+                data = res.json()
+
+                if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
+                    v = data["data"][0].get("value")
+                    if v is not None:
+                        if DEBUG:
+                            print(f"FGI from {url}: {v}")
+                        return int(v), False
+
+                if "fgi" in data and "now" in data["fgi"] and "value" in data["fgi"]["now"]:
+                    v = data["fgi"]["now"]["value"]
+                    if DEBUG:
+                        print(f"FGI from RapidAPI: {v}")
+                    return int(v), False
+
+            except Exception as e:
+                if DEBUG:
+                    print(f"FGI fetch error ({url}, attempt {attempt+1}): {e}")
+                time.sleep(attempt)
+
+    if DEBUG:
+        print("FGI all sources failed → using Proxy FGI")
+    return compute_proxy_fgi(indicators, vix_value), True
+
+# -----------------------------
+# 5-2. Breadth PRO MAX (Proxy 메인 + 원본 덤)
+# -----------------------------
+def fetch_breadth_final(sp_change, ndx_change, vix, vix_prev, atr_ratio):
+    proxy_val = compute_proxy_breadth_promax(sp_change, ndx_change, vix, vix_prev, atr_ratio)
+    real_val = None
+    headers = {"User-Agent": "Mozilla/5.0"}
+
     try:
-        # StockCharts NYSE Advance/Decline 페이지 파싱 (예: $NYAD)
-        sc_url = "https://stockcharts.com/h-sc/ui?s=$NYAD"
-        res = requests.get(sc_url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+        url = "https://stockcharts.com/h-sc/ui?s=$NYAD"
+        res = requests.get(url, headers=headers, timeout=8)
         res.raise_for_status()
         html = res.text
 
-        # 아주 단순한 방식: "Advances" / "Declines" 숫자 패턴을 정규식으로 찾는다고 가정
-        # 실제 페이지 구조에 맞게 조정 필요
-        adv_match = re.search(r"Advances[^0-9]*([0-9,]+)", html)
-        dec_match = re.search(r"Declines[^0-9]*([0-9,]+)", html)
+        adv = re.search(r"Advances[^0-9]*([0-9,]+)", html)
+        dec = re.search(r"Declines[^0-9]*([0-9,]+)", html)
 
-        if adv_match and dec_match:
-            adv = float(adv_match.group(1).replace(",", ""))
-            dec = float(dec_match.group(1).replace(",", ""))
-            if adv + dec > 0:
-                breadth_raw = int((adv / (adv + dec)) * 100)
-                is_proxy_breadth = False
+        if adv and dec:
+            adv_n = float(adv.group(1).replace(",", ""))
+            dec_n = float(dec.group(1).replace(",", ""))
+            if adv_n + dec_n > 0:
+                real_val = int((adv_n / (adv_n + dec_n)) * 100)
                 if DEBUG:
-                    print(f"StockCharts Breadth 성공: adv={adv}, dec={dec}, breadth={breadth_raw}")
-            else:
-                raise ValueError("adv+dec == 0")
-        else:
-            raise ValueError("Adv/Dec 패턴 매칭 실패")
+                    print(f"[Breadth] StockCharts real breadth={real_val}")
     except Exception as e:
         if DEBUG:
-            print(f"StockCharts breadth 실패: {e} -> Proxy breadth 사용")
-        breadth_raw = compute_proxy_breadth(sp_change)
-        is_proxy_breadth = True
+            print(f"[Breadth] StockCharts 실패(무시): {e}")
 
+    if real_val is not None:
+        blended = blend_real_breadth(proxy_val, real_val)
+        if DEBUG:
+            print(f"[Breadth] Proxy={proxy_val}, Real={real_val}, Blended={blended}")
+        return blended, False
+
+    if DEBUG:
+        print(f"[Breadth] Real 없음 → Proxy만 사용: {proxy_val}")
+    return proxy_val, True
+
+# -----------------------------
+# 5-3. FGI + Breadth 통합
+# -----------------------------
+def get_fgi_and_breadth(indicators, vix_value, vix_prev, sp_change, ndx_change):
+    fgi_value, is_proxy_fgi = fetch_fgi_stable(indicators, vix_value)
+    breadth_raw, is_proxy_breadth = fetch_breadth_final(
+        sp_change=sp_change,
+        ndx_change=ndx_change,
+        vix=vix_value,
+        vix_prev=vix_prev,
+        atr_ratio=indicators.get("atr_ratio", 0)
+    )
     return fgi_value, breadth_raw, is_proxy_fgi, is_proxy_breadth
 
 # -----------------------------
@@ -267,9 +358,8 @@ def get_macro_data():
         return None, None, None
 
 def compute_macro_score(fx_now, tnx_now, oil_now):
-    macro_score = 50  # 기본값
+    macro_score = 50
 
-    # 1. 환율 (FX)
     if fx_now is not None:
         if fx_now < 1320: macro_score += 20
         elif fx_now < 1380: macro_score += 10
@@ -278,7 +368,6 @@ def compute_macro_score(fx_now, tnx_now, oil_now):
         elif fx_now < 1500: macro_score -= 20
         else: macro_score -= 30
 
-    # 2. 금리 (TNX)
     if tnx_now is not None:
         if tnx_now < 3.5: macro_score += 20
         elif tnx_now < 4.0: macro_score += 10
@@ -287,7 +376,6 @@ def compute_macro_score(fx_now, tnx_now, oil_now):
         elif tnx_now < 4.9: macro_score -= 25
         else: macro_score -= 35
 
-    # 3. 유가 (WTI)
     if oil_now is not None:
         if oil_now < 55: macro_score += 25
         elif oil_now < 65: macro_score += 15
@@ -347,7 +435,6 @@ def fetch_market_data():
     ndx_all = yf.Ticker("^NDX").history(period="252d")
     vix_hist = yf.Ticker("^VIX").history(period="2d")
 
-    # 변동률
     sp_yesterday = sp_all.iloc[-2]
     sp_today = sp_all.iloc[-1]
     sp_change = float((sp_today["Close"] - sp_yesterday["Close"]) / sp_yesterday["Close"] * 100)
@@ -360,16 +447,14 @@ def fetch_market_data():
     vix_value = float(vix_close.iloc[-1])
     vix_prev = float(vix_close.iloc[-2]) if len(vix_close) >= 2 else vix_value
 
-    # 지표 계산
     indicators = compute_indicators(sp_hist[["Open", "High", "Low", "Close"]])
 
-    # FGI + Breadth (Alternative.me + StockCharts + Proxy)
-    fgi_val, breadth_val, is_proxy_fgi, is_proxy_breadth = get_fgi_and_breadth(indicators, vix_value, sp_change)
+    fgi_val, breadth_val, is_proxy_fgi, is_proxy_breadth = get_fgi_and_breadth(
+        indicators, vix_value, vix_prev, sp_change, ndx_change
+    )
 
-    # 매크로
     fx_now, tnx_now, oil_now = get_macro_data()
 
-    # 52주 고점 등
     high_52w = float(sp_all["High"].max()) if len(sp_all) > 0 else 0
     ma50 = float(sp_all["Close"].rolling(50).mean().iloc[-1])
     ma200 = float(sp_all["Close"].rolling(200).mean().iloc[-1]) if len(sp_all) >= 200 else None
@@ -519,7 +604,6 @@ def main():
 
     vol_stability = compute_volatility_stability(vix_value, data.get("atr_ratio",0))
 
-    # 가중치는 기존 그대로 사용 (원하면 여기서 조정 가능)
     final_score = int(
         tech_score +
         (fgi_val * 0.25) +
@@ -652,11 +736,11 @@ def main():
 - 변화: {comments.get('high52_change_c','-')}
 
 🧮 점수 산출
-- 기술 점수(40%): {tech_score_raw}/100
-- {fgi_display_name}(30%): {fgi_val}/100 🔥
-- 매크로 점수(15%): {macro_score}/100
+- 기술 점수(35%): {tech_score_raw}/100
+- {fgi_display_name}(25%): {fgi_val}/100 🔥
+- 매크로 점수(20%): {macro_score}/100
 - Breadth 점수(10%): {breadth_score}/100 ({breadth_label})
-- 변동성 안정성(5%): {vol_stability}/100
+- 변동성 안정성(10%): {vol_stability}/100
 - 총 점수: {final_score}/100
 
 🧭 결론
