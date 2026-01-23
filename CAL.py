@@ -403,7 +403,53 @@ def compute_volatility_stability(vix_value, atr_ratio):
     return int(max(0, min(100, score)))
 
 # -----------------------------
-# 8. 포트폴리오 수익률 및 데이터 수집
+# 8. 레버리지 ETF 전용 PRO MAX 매수금액 계산 함수들
+# -----------------------------
+
+def base_buy_amount_from_score(final_score):
+    """
+    final_score 기반 곡선형 매수금액 계산
+    - 점수가 낮을수록 기하급수적으로 매수금액 증가
+    """
+    max_buy = 40000   # 적극 매수 최대치
+    min_buy = 10000   # 상승장 최소 매수
+
+    intensity = ((100 - final_score) / 100) ** 1.3
+    return int(min_buy + intensity * (max_buy - min_buy))
+
+
+def adjust_by_avg_change(buy_amount, avg_change):
+    """
+    전날 지수 변동률 기반 보정
+    - 하락 강할수록 매수금액 증가
+    - 상승 강할수록 매수금액 감소
+    """
+    # 하락 구간
+    if avg_change <= -2.0:
+        return int(buy_amount * 1.40)
+    if avg_change <= -1.0:
+        return int(buy_amount * 1.25)
+    if avg_change <= -0.3:
+        return int(buy_amount * 1.10)
+
+    # 중립
+    if avg_change < 0.3:
+        return buy_amount
+
+    # 상승 구간
+    if avg_change < 1.0:
+        return int(buy_amount * 0.85)
+    if avg_change < 2.0:
+        return int(buy_amount * 0.70)
+    if avg_change < 4.0:
+        return int(buy_amount * 0.55)
+
+    # 과열 상승
+    return int(buy_amount * 0.40)
+
+
+# -----------------------------
+# 9. 포트폴리오 수익률 및 데이터 수집
 # -----------------------------
 def get_ticker_returns(tickers):
     returns = {}
@@ -489,7 +535,7 @@ def fetch_market_data():
     }
 
 # -----------------------------
-# 9. 상세 코멘트 생성
+# 10. 상세 코멘트 생성
 # -----------------------------
 def indicator_comments(data, high_52w, vix_value, vix_prev):
     comments = {}
@@ -544,7 +590,7 @@ def indicator_comments(data, high_52w, vix_value, vix_prev):
     return comments
 
 # -----------------------------
-# 10. 메인 실행
+# 11. 메인 실행
 # -----------------------------
 def main():
     print("데이터 수집 시작...")
@@ -635,20 +681,27 @@ def main():
         summary = "공포·저평가 구간 → 공격적 매수 구간 후보"
 
     avg_change = (sp_change + ndx_change) / 2
-    if final_score >= 90:
-        result = "전량 매도"
-        buy_amount = 0
-    elif final_score >= 75:
-        result = "분할 매도"
-        buy_amount = 0
-    elif final_score >= 50:
-        result = "모으기"
-        buy_amount = int(10000 + ((74 - final_score) / 74) * 25000)
-        if avg_change > 0:
-            buy_amount = 10000
-    else:
-        result = "모으기 (적극)"
-        buy_amount = max(0, int(15000 + ((49 - final_score) / 74) * 25000))
+
+if final_score >= 70:
+    result = "전량 매도"
+    buy_amount = 0
+
+elif final_score >= 60:
+    result = "분할 매도"
+    buy_amount = 0
+
+elif final_score >= 50:
+    result = "모으기"
+    # 1) final_score 기반 곡선형 기본 매수금액
+    buy_amount = base_buy_amount_from_score(final_score)
+    # 2) avg_change 기반 보정
+    buy_amount = adjust_by_avg_change(buy_amount, avg_change)
+
+else:
+    result = "모으기 (적극)"
+    buy_amount = base_buy_amount_from_score(final_score)
+    buy_amount = adjust_by_avg_change(buy_amount, avg_change)
+
 
     alert_lines = []
     if is_proxy_fgi:
