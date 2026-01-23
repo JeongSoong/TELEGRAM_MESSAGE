@@ -570,16 +570,16 @@ def main():
     if ma200 is not None and data.get("price",0) > ma200: tech_score_raw += 5
 
     tech_score_raw = min(100, max(0, tech_score_raw))
-    tech_score = tech_score_raw * 0.4
+    tech_score = tech_score_raw * 0.35
 
     vol_stability = compute_volatility_stability(vix_value, data.get("atr_ratio",0))
 
     final_score = int(
         tech_score +
-        (fgi_val * 0.30) +
-        (macro_score * 0.15) +
+        (fgi_val * 0.25) +
+        (macro_score * 0.20) +
         (breadth_score * 0.10) +
-        (vol_stability * 0.05)
+        (vol_stability * 0.10)
     )
 
     if final_score >= 85:
