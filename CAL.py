@@ -680,7 +680,7 @@ def main():
     else:
         summary = "공포·저평가 구간 → 공격적 매수 구간 후보"
 
-    avg_change = (sp_change + ndx_change) / 2
+avg_change = (sp_change + ndx_change) / 2
 
 if final_score >= 70:
     result = "전량 매도"
