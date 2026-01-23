@@ -411,7 +411,7 @@ def base_buy_amount_from_score(final_score):
     final_score 기반 곡선형 매수금액 계산
     - 점수가 낮을수록 기하급수적으로 매수금액 증가
     """
-    max_buy = 30000   # 적극 매수 최대치
+    max_buy = 35000   # 적극 매수 최대치
     min_buy = 10000   # 상승장 최소 매수
 
     intensity = ((100 - final_score) / 100) ** 1.3
@@ -420,32 +420,65 @@ def base_buy_amount_from_score(final_score):
 
 def adjust_by_avg_change(buy_amount, avg_change):
     """
-    전날 지수 변동률 기반 보정
-    - 하락 강할수록 매수금액 증가
-    - 상승 강할수록 매수금액 감소
+    세분화된 avg_change 보정
+    - 하락 구간은 더 세밀하게 공격성 증가
+    - 상승 구간은 단계적으로 보수화
     """
-    # 하락 구간
-    if avg_change <= -2.0:
-        return int(buy_amount * 1.40)
-    if avg_change <= -1.0:
-        return int(buy_amount * 1.25)
-    if avg_change <= -0.3:
-        return int(buy_amount * 1.10)
+    # 극단적 급락
+    if avg_change <= -6.0:
+        return int(buy_amount * 1.80)
+    if avg_change <= -5.0:
+        return int(buy_amount * 1.70)
 
-    # 중립
+    # 강한 하락
+    if avg_change <= -4.0:
+        return int(buy_amount * 1.60)
+    if avg_change <= -3.0:
+        return int(buy_amount * 1.50)
+
+    # 중간 하락
+    if avg_change <= -2.5:
+        return int(buy_amount * 1.40)
+    if avg_change <= -2.0:
+        return int(buy_amount * 1.30)
+    if avg_change <= -1.5:
+        return int(buy_amount * 1.20)
+
+    # 약한 하락
+    if avg_change <= -1.0:
+        return int(buy_amount * 1.15)
+    if avg_change <= -0.5:
+        return int(buy_amount * 1.10)
+    if avg_change <= -0.3:
+        return int(buy_amount * 1.05)
+    if avg_change <= -0.1:
+        return int(buy_amount * 1.02)
+
+    # 중립 근처
     if avg_change < 0.3:
         return buy_amount
 
-    # 상승 구간
-    if avg_change < 1.0:
-        return int(buy_amount * 0.85)
-    if avg_change < 2.0:
-        return int(buy_amount * 0.70)
-    if avg_change < 4.0:
-        return int(buy_amount * 0.55)
+    # 약한 상승
+    if avg_change < 0.7:
+        return int(buy_amount * 0.95)
+    if avg_change < 1.2:
+        return int(buy_amount * 0.90)
 
-    # 과열 상승
-    return int(buy_amount * 0.40)
+    # 중간 상승
+    if avg_change < 1.8:
+        return int(buy_amount * 0.80)
+    if avg_change < 2.5:
+        return int(buy_amount * 0.70)
+
+    # 강한 상승
+    if avg_change < 3.5:
+        return int(buy_amount * 0.60)
+    if avg_change < 5.0:
+        return int(buy_amount * 0.50)
+
+    # 과열
+    return int(buy_amount * 0.35)
+
 
 
 # -----------------------------
@@ -468,23 +501,43 @@ def get_ticker_returns(tickers):
     return returns
 
 def allocation_multiplier_from_return(pct):
-    # 급락 구간
-    if pct <= -6.0: return 1.60
-    if pct <= -4.0: return 1.45
-    if pct <= -2.0: return 1.30
-    if pct <= -1.0: return 1.20
-    if pct <= -0.3: return 1.10
+    # 극단적 급락
+    if pct <= -8.0: return 1.95
+    if pct <= -6.0: return 1.80
+    if pct <= -5.0: return 1.70
 
-    # 중립 구간
+    # 강한 하락
+    if pct <= -4.0: return 1.60
+    if pct <= -3.0: return 1.50
+
+    # 중간 하락
+    if pct <= -2.0: return 1.35
+    if pct <= -1.5: return 1.25
+
+    # 약한 하락
+    if pct <= -1.0: return 1.15
+    if pct <= -0.5: return 1.08
+    if pct <= -0.3: return 1.05
+    if pct <= -0.1: return 1.02
+
+    # 중립 근처
     if pct < 0.3: return 1.00
 
-    # 상승 구간
-    if pct < 1.0: return 0.90
-    if pct < 2.0: return 0.80
-    if pct < 4.0: return 0.65
+    # 약한 상승
+    if pct < 0.7: return 0.95
+    if pct < 1.2: return 0.90
 
-    # 과열 구간
-    return 0.50
+    # 중간 상승
+    if pct < 1.8: return 0.80
+    if pct < 2.5: return 0.70
+
+    # 강한 상승
+    if pct < 3.5: return 0.60
+    if pct < 5.0: return 0.50
+
+    # 과열 상승
+    return 0.35
+
 
 def fetch_market_data():
     sp_all = yf.Ticker("^GSPC").history(period="252d")
