@@ -411,7 +411,7 @@ def base_buy_amount_from_score(final_score):
     final_score 기반 곡선형 매수금액 계산
     - 점수가 낮을수록 기하급수적으로 매수금액 증가
     """
-    max_buy = 40000   # 적극 매수 최대치
+    max_buy = 30000   # 적극 매수 최대치
     min_buy = 10000   # 상승장 최소 매수
 
     intensity = ((100 - final_score) / 100) ** 1.3
