@@ -6,6 +6,7 @@ from datetime import datetime
 import time
 import re
 import json
+import math
 
 # -----------------------------
 # 설정
@@ -417,69 +418,27 @@ def base_buy_amount_from_score(final_score):
     intensity = ((100 - final_score) / 100) ** 1.3
     return int(min_buy + intensity * (max_buy - min_buy))
 
-
 def adjust_by_avg_change(buy_amount, avg_change):
     """
-    세분화된 avg_change 보정
-    - 하락 구간은 더 세밀하게 공격성 증가
-    - 상승 구간은 단계적으로 보수화
+    avg_change: -10% ~ +10%
+    multiplier: 0.5 ~ 2.0 (곡선형 S-curve 매핑)
     """
-    # 극단적 급락
-    if avg_change <= -6.0:
-        return int(buy_amount * 1.80)
-    if avg_change <= -5.0:
-        return int(buy_amount * 1.70)
 
-    # 강한 하락
-    if avg_change <= -4.0:
-        return int(buy_amount * 1.60)
-    if avg_change <= -3.0:
-        return int(buy_amount * 1.50)
+    # 1) 입력값 제한
+    avg_change = max(-10, min(10, avg_change))
 
-    # 중간 하락
-    if avg_change <= -2.5:
-        return int(buy_amount * 1.40)
-    if avg_change <= -2.0:
-        return int(buy_amount * 1.30)
-    if avg_change <= -1.5:
-        return int(buy_amount * 1.20)
+    # 2) 곡선형 매핑 (S-curve)
+    # tanh(x/5)는 -1 ~ +1 사이에서 부드럽게 움직임
+    # 이를 0.5~2.0 범위로 변환
+    curve = math.tanh(avg_change / 5)
 
-    # 약한 하락
-    if avg_change <= -1.0:
-        return int(buy_amount * 1.15)
-    if avg_change <= -0.5:
-        return int(buy_amount * 1.10)
-    if avg_change <= -0.3:
-        return int(buy_amount * 1.05)
-    if avg_change <= -0.1:
-        return int(buy_amount * 1.02)
+    # curve = -1 → 2.0
+    # curve =  0 → 1.0
+    # curve = +1 → 0.5
+    multiplier = 1.25 - 0.75 * curve
 
-    # 중립 근처
-    if avg_change < 0.3:
-        return buy_amount
-
-    # 약한 상승
-    if avg_change < 0.7:
-        return int(buy_amount * 0.95)
-    if avg_change < 1.2:
-        return int(buy_amount * 0.90)
-
-    # 중간 상승
-    if avg_change < 1.8:
-        return int(buy_amount * 0.80)
-    if avg_change < 2.5:
-        return int(buy_amount * 0.70)
-
-    # 강한 상승
-    if avg_change < 3.5:
-        return int(buy_amount * 0.60)
-    if avg_change < 5.0:
-        return int(buy_amount * 0.50)
-
-    # 과열
-    return int(buy_amount * 0.35)
-
-
+    # 3) buy_amount 적용
+    return int(buy_amount * multiplier)
 
 # -----------------------------
 # 9. 포트폴리오 수익률 및 데이터 수집
