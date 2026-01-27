@@ -408,15 +408,18 @@ def compute_volatility_stability(vix_value, atr_ratio):
 # -----------------------------
 
 def base_buy_amount_from_score(final_score):
-    """
-    final_score 기반 곡선형 매수금액 계산
-    - 점수가 낮을수록 기하급수적으로 매수금액 증가
-    """
-    max_buy = 30000   # 적극 매수 최대치
-    min_buy = 10000   # 상승장 최소 매수
+    # 60점 이상 → 매수 0원
+    if final_score >= 60:
+        return 0
 
-    intensity = ((100 - final_score) / 100) ** 1.3
-    return int(min_buy + intensity * (max_buy - min_buy))
+    # 0~59점 → 선형 매핑
+    # score=59 → 10000원
+    # score=0  → 30000원
+    score = max(0, min(59, final_score))
+    slope = -20000 / 59  # ≈ -338.983
+    amount = 30000 + slope * score
+
+    return int(amount)
 
 def adjust_by_avg_change(buy_amount, avg_change):
     """
